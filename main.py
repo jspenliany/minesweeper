@@ -1,6 +1,8 @@
 import time
 import logging
 import pyautogui
+import cv2
+import numpy as np
 from src.vision import Vision
 from src.solver import Solver
 from src.controller import Controller
@@ -13,12 +15,11 @@ class MinesweeperBot:
         self.controller = None
         self.solver = None
         self.state = "IDLE"
-        self.rows = 9  # Default, can be updated via vision analysis
-        self.cols = 9
+        self.rows = 16  # Updated for 30x16 board
+        self.cols = 30
 
     def run(self):
         logging.info("Minesweeper Bot started. Waiting for game...")
-        
         while True:
             if self.state == "IDLE":
                 self._handle_idle()
@@ -32,8 +33,7 @@ class MinesweeperBot:
                 self._handle_playing()
             elif self.state == "RESULT":
                 self._handle_result()
-            
-            time.sleep(1) # Avoid overloading CPU
+            time.sleep(1)
 
     def _handle_idle(self):
         logging.info("State: IDLE. Searching for game window...")
@@ -66,7 +66,11 @@ class MinesweeperBot:
 
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
         
-        # Test coordinates: 4 corners
+        screen = self.vision.get_screenshot()
+        cv2.circle(screen, (calib['origin_x'], calib['origin_y']), 5, (0, 0, 255), -1)
+        cv2.imwrite("debug_origin.png", screen)
+        logging.info("Saved 'debug_origin.png'. Please check if the red dot is in the center of cell (0,0).")
+
         test_points = [
             (0, 0, "Top-Left"),
             (0, self.cols - 1, "Top-Right"),
@@ -78,30 +82,22 @@ class MinesweeperBot:
         for r, c, name in test_points:
             logging.info(f"Testing {name} corner at ({r}, {c})...")
             self.controller.click_cell(r, c)
-            time.sleep(1.5) # Give user time to see the click
+            time.sleep(1.5)
             
-        logging.info("Test completed. If coordinates were correct, moving to First Move.")
-        logging.info("If coordinates were WRONG, please close the program and check your anchors/assets.")
-        
-        # In a real CLI tool we might ask for input, but here we'll assume success if not interrupted
-        # Give a short window to abort
+        logging.info("Test completed. Moving to First Move.")
         time.sleep(2)
         self.state = "FIRST_MOVE"
 
     def _handle_first_move(self):
         logging.info("State: FIRST_MOVE. Executing initial random move...")
-        # Controller is already initialized in TEST_CALIBRATION
         self.solver = Solver(self.rows, self.cols)
-        
         r, c = self.rows // 2, self.cols // 2
         logging.info(f"Performing first move at ({r}, {c})")
         self.controller.click_cell(r, c)
-        
         self.state = "PLAYING"
 
     def _handle_playing(self):
         logging.info("State: PLAYING. Analyzing board...")
-        
         board_info = {
             'origin_x': self.controller.origin_x,
             'origin_y': self.controller.origin_y,
@@ -111,8 +107,12 @@ class MinesweeperBot:
             'cols': self.cols
         }
         matrix = self.vision.analyze_board(board_info)
-        self.solver.update_grid(matrix)
         
+        print("\n--- Current Logical Board ---")
+        print(matrix)
+        print("-----------------------------\n")
+        
+        self.solver.update_grid(matrix)
         action, coords, reason = self.solver.solve()
         
         if action == 'NONE':

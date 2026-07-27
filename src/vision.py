@@ -56,12 +56,11 @@ class Vision:
     def calibrate_grid(self):
         """
         Automatically find game board boundary and cell size using anchors.
-        Expects an anchor template for the top-left corner of the board.
+        Finds the anchor, then searches for the first actual closed tile to set as origin.
         """
         screen = self.get_screenshot()
         
-        # 1. Find board top-left anchor
-        # Note: User should name the anchor as 'board_tl.png' (top-left)
+        # 1. Find board top-left anchor to get a search region
         anchor = self.find_image(screen, "board_tl.png")
         if not anchor:
             logging.error("Could not find board top-left anchor. Please check assets/anchors/board_tl.png")
@@ -69,19 +68,26 @@ class Vision:
         
         ax, ay, aw, ah = anchor
         
-        # 2. Determine cell size
-        # We search for a standard 'closed_tile.png' to get the cell dimensions
-        tile = self.find_image(screen, "closed_tile.png")
-        if not tile:
-            logging.error("Could not find closed_tile.png. Please check assets/tiles/closed_tile.png")
+        # 2. Determine cell size using the template
+        tile_template = self.templates.get("closed_tile.png")
+        if tile_template is None:
+            logging.error("closed_tile.png missing in assets.")
             return None
+        tw, th = tile_template.shape[1], tile_template.shape[0]
         
-        _, _, tw, th = tile
+        # 3. Search for the FIRST actual closed tile in the vicinity of the anchor
+        # We look in a small region to the right and below the anchor
+        search_region = screen[ay : ay + 200, ax : ax + 200]
+        res = cv2.matchTemplate(search_region, tile_template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
         
-        # Calculate the center of the first cell
-        # The anchor might be the border, so we offset to the center of the first cell
-        origin_x = ax + tw // 2
-        origin_y = ay + th // 2
+        if max_val < 0.8:
+            logging.error("Found anchor but couldn't find any closed tiles nearby. Check your tiles/closed_tile.png")
+            return None
+            
+        # The actual origin is the center of this first found tile
+        origin_x = ax + max_loc[0] + tw // 2
+        origin_y = ay + max_loc[1] + th // 2
         
         logging.info(f"Grid calibrated: Origin({origin_x}, {origin_y}), CellSize({tw}x{th})")
         return {

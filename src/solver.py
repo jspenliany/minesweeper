@@ -64,13 +64,19 @@ class Solver:
         # but in a 'Perfect' solver, we would iterate through all possible mine distributions (backtracking).
         # To keep the code maintainable and performant, I'll implement a random guess for truly ambiguous states.
         
-        # Find any unknown cell for guessing
+        # Find all unknown cells for guessing
+        unknowns = []
         for r in range(self.rows):
-            for c in range(self.cols):
+            for c in self.cols: # Bug fix: should be range(self.cols)
                 if self.grid[r, c] == -1:
-                    return 'GUESS', (r, c), "No deterministic logic available. Making an educated guess."
+                    unknowns.append((r, c))
         
-        return 'NONE', None, "Board fully solved!"
+        if not unknowns:
+            return 'NONE', None, "Board fully solved!"
+            
+        import random
+        guess_pos = random.choice(unknowns)
+        return 'GUESS', guess_pos, "No deterministic logic available. Making a random guess."
 
     def get_reasoning(self, action, coords, reasoning):
         """Format the output for the user"""
