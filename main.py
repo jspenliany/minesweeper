@@ -155,18 +155,39 @@ class MinesweeperBot:
             self.state = "IDLE"
             return
 
-        logging.info("All 4 corners opened! Coordinates correct. Exiting calibration test.")
-        self.state = "EXIT"
+        logging.info("All 4 corners opened! Coordinates correct. Starting a real game...")
+        # Start a fresh game (the test board has 4 opened cells)
+        self._focus_game_window()
+        pyautogui.hotkey('alt', 'g')
+        time.sleep(0.3)
+        pyautogui.press('f2')
+        time.sleep(0.1)
+        pyautogui.press('alt')
+        time.sleep(0.5)
+        self.state = "FIRST_MOVE"
 
     def _handle_first_move(self):
-        logging.info("State: FIRST_MOVE. Executing initial random move...")
+        logging.info("State: FIRST_MOVE. Calibrating fresh board...")
+        calib = self.vision.calibrate_grid()
+        if not calib:
+            logging.error("Calibration failed in FIRST_MOVE. Returning to IDLE.")
+            self.state = "IDLE"
+            return
+        self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
         self.solver = Solver(self.rows, self.cols)
         r, c = self.rows // 2, self.cols // 2
         self._focus_game_window()
         self.controller.click_cell(r, c)
+        logging.info(f"First move at ({r}, {c}). Entering PLAYING state.")
         self.state = "PLAYING"
 
     def _handle_playing(self):
+        # Check for game over dialog before analyzing
+        if find_window_by_title(["游戏失败", "Game Over"]):
+            logging.info("Game over dialog detected!") 
+            self.state = "RESULT"
+            return
+        
         logging.info("State: PLAYING. Analyzing board...")
         board_info = {
             'origin_x': self.controller.origin_x,
@@ -211,7 +232,20 @@ class MinesweeperBot:
             self.state = "RESULT"
 
     def _handle_result(self):
-        logging.info("State: RESULT. Cleaning up and restarting...")
+        logging.info("State: RESULT. Game over. Looking for dialog...")
+        
+        # Try to handle "游戏失败" dialog with keyboard shortcuts
+        dialog_hwnd = find_window_by_title(["游戏失败", "Game Over"])
+        if dialog_hwnd:
+            user32.SetForegroundWindow(dialog_hwnd)
+            time.sleep(0.2)
+            pyautogui.press('p')  # P = new game
+            logging.info("Pressed P to start a new game.")
+            time.sleep(0.5)
+            self.state = "FIRST_MOVE"
+            return
+        
+        # Fallback: try to find restart button in screenshot
         screen = self.vision.get_screenshot()
         restart_btn = self.vision.find_image(screen, "restart_button.png")
         
@@ -221,10 +255,11 @@ class MinesweeperBot:
             sx = rx + rw // 2 + self.vision.window_offset_x
             sy = ry + rh // 2 + self.vision.window_offset_y
             self.controller.click_screen_pos(sx, sy)
-            logging.info("Clicked 'Restart'. Returning to Main Menu.")
-            self.state = "MAIN_MENU"
+            logging.info("Clicked 'Restart' button. Starting next game.")
+            time.sleep(0.5)
+            self.state = "FIRST_MOVE"
         else:
-            logging.warning("Could not find restart button. Returning to Idle.")
+            logging.warning("No dialog or restart button found. Returning to IDLE.")
             self.state = "IDLE"
 
 if __name__ == "__main__":
