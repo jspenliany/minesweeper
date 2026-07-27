@@ -3,25 +3,46 @@ import numpy as np
 import pyautogui
 import logging
 import os
+import ctypes
+from ctypes import wintypes
+
+user32 = ctypes.windll.user32
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def find_window_by_title(keywords):
+    hwnd = None
+    def enum_callback(handle, _):
+        nonlocal hwnd
+        length = user32.GetWindowTextLengthW(handle) + 1
+        buffer = ctypes.create_unicode_buffer(length)
+        user32.GetWindowTextW(handle, buffer, length)
+        title = buffer.value
+        for kw in keywords:
+            if kw in title:
+                hwnd = handle
+                return False
+        return True
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    callback = enum_proc(enum_callback)
+    user32.EnumWindows(callback, 0)
+    return hwnd
 
 class Vision:
     def __init__(self, assets_path="D:/workspace/minesweeper-bot/assets"):
         self.assets_path = assets_path
-        self.templates = {}  # Store templates: {name: image_array}
+        self.templates = {}
+        self.window_offset_x = 0
+        self.window_offset_y = 0
         self.load_templates()
 
     def load_templates(self):
-        """Load all images from assets/anchors and assets/tiles"""
-        # Load anchors
         anchor_dir = os.path.join(self.assets_path, "anchors")
         if os.path.exists(anchor_dir):
             for file in os.listdir(anchor_dir):
                 path = os.path.join(anchor_dir, file)
                 self.templates[file] = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         
-        # Load tiles
         tile_dir = os.path.join(self.assets_path, "tiles")
         if os.path.exists(tile_dir):
             for file in os.listdir(tile_dir):
@@ -30,19 +51,51 @@ class Vision:
         
         logging.info(f"Loaded {len(self.templates)} templates.")
 
+    def get_window_client_rect(self):
+        """Get the client area rectangle of the Minesweeper window on screen"""
+        hwnd = find_window_by_title(["扫雷", "Minesweeper", "minesweeper", "扫雷游戏"])
+        if not hwnd:
+            return None
+        
+        rect = wintypes.RECT()
+        user32.GetClientRect(hwnd, ctypes.byref(rect))
+        
+        pt = wintypes.POINT(0, 0)
+        user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        
+        return {
+            'left': pt.x,
+            'top': pt.y,
+            'width': rect.right,
+            'height': rect.bottom
+        }
+
     def get_screenshot(self):
-        """Capture screen and convert to OpenCV format (BGR)"""
-        screenshot = pyautogui.screenshot()
+        """Capture the Minesweeper window client area (or full screen if window not found)"""
+        win_rect = self.get_window_client_rect()
+        if win_rect and win_rect['width'] > 0 and win_rect['height'] > 0:
+            self.window_offset_x = win_rect['left']
+            self.window_offset_y = win_rect['top']
+            screenshot = pyautogui.screenshot(region=(
+                win_rect['left'], win_rect['top'],
+                win_rect['width'], win_rect['height']
+            ))
+            logging.info(f"Captured window client area: ({win_rect['left']}, {win_rect['top']}) {win_rect['width']}x{win_rect['height']}")
+        else:
+            self.window_offset_x = 0
+            self.window_offset_y = 0
+            screenshot = pyautogui.screenshot()
+            logging.info("Window not found, captured full screen.")
+        
         return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
 
+    def _screen_to_client(self, x, y):
+        """Convert relative window coordinates to absolute screen coordinates"""
+        return x + self.window_offset_x, y + self.window_offset_y
+
     def find_image(self, target_img, template_name, threshold=0.8):
-        """
-        Find the first occurrence of a template in the target image
-        :return: (x, y, w, h) of the match, or None
-        """
         template = self.templates.get(template_name)
         if template is None:
-            # Silently return None if template is missing to avoid log flooding
             return None
 
         res = cv2.matchTemplate(target_img, template, cv2.TM_CCOEFF_NORMED)
@@ -54,42 +107,63 @@ class Vision:
         return None
 
     def calibrate_grid(self):
-        """
-        Automatically find game board boundary and cell size using anchors.
-        Finds the anchor, then searches for the first actual closed tile to set as origin.
+        """Find the game board by scanning the entire screenshot for closed tiles.
+        Finds the top-leftmost closed tile to establish the grid origin.
         """
         screen = self.get_screenshot()
+        debug_img = screen.copy()
         
-        # 1. Find board top-left anchor to get a search region
-        anchor = self.find_image(screen, "board_tl.png")
-        if not anchor:
-            logging.error("Could not find board top-left anchor. Please check assets/anchors/board_tl.png")
-            return None
-        
-        ax, ay, aw, ah = anchor
-        
-        # 2. Determine cell size using the template
         tile_template = self.templates.get("closed_tile.png")
         if tile_template is None:
             logging.error("closed_tile.png missing in assets.")
             return None
         tw, th = tile_template.shape[1], tile_template.shape[0]
+        logging.info(f"Cell template size: {tw}x{th}")
         
-        # 3. Search for the FIRST actual closed tile in the vicinity of the anchor
-        # We look in a small region to the right and below the anchor
-        search_region = screen[ay : ay + 200, ax : ax + 200]
-        res = cv2.matchTemplate(search_region, tile_template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        # Scan entire screenshot for closed tiles
+        res = cv2.matchTemplate(screen, tile_template, cv2.TM_CCOEFF_NORMED)
+        locations = np.where(res >= 0.8)
         
-        if max_val < 0.8:
-            logging.error("Found anchor but couldn't find any closed tiles nearby. Check your tiles/closed_tile.png")
+        if len(locations[0]) == 0:
+            logging.error("Could not find any closed tiles in the screenshot.")
+            cv2.imwrite("debug_no_tile.png", debug_img)
             return None
-            
-        # The actual origin is the center of this first found tile
-        origin_x = ax + max_loc[0] + tw // 2
-        origin_y = ay + max_loc[1] + th // 2
         
-        logging.info(f"Grid calibrated: Origin({origin_x}, {origin_y}), CellSize({tw}x{th})")
+        # Collect all match positions (top-left corners) and find the top-leftmost tile
+        matches = list(zip(locations[1], locations[0]))  # (x, y) pairs
+        matches.sort(key=lambda p: (p[1], p[0]))  # Sort by y first (topmost), then x (leftmost)
+        tile_x, tile_y = matches[0]
+        
+        # Draw anchor if found (for reference only)
+        anchor = self.find_image(screen, "board_tl.png")
+        if anchor:
+            ax, ay, aw, ah = anchor
+            cv2.rectangle(debug_img, (ax, ay), (ax + aw, ay + ah), (0, 255, 0), 2)
+            cv2.putText(debug_img, "Anchor", (ax, ay - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            logging.info(f"Anchor found at ({ax}, {ay}) for reference")
+        
+        # Validate: check if the entire board fits within the screenshot
+        board_right = tile_x + (30 * tw)
+        board_bottom = tile_y + (16 * th)
+        if board_right > screen.shape[1] or board_bottom > screen.shape[0]:
+            logging.warning(f"Board extends beyond screenshot: board right={board_right}, bottom={board_bottom}, "
+                           f"screenshot size=({screen.shape[1]}x{screen.shape[0]})")
+            cv2.putText(debug_img, f"BOARD RIGHT={board_right}", (tile_x, tile_y + th + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        
+        origin_x, origin_y = self._screen_to_client(tile_x + tw // 2, tile_y + th // 2)
+        
+        cv2.rectangle(debug_img, (tile_x, tile_y), (tile_x + tw, tile_y + th), (0, 255, 255), 2)
+        cv2.circle(debug_img, (tile_x + tw // 2, tile_y + th // 2), 4, (0, 0, 255), -1)
+        cv2.putText(debug_img, "Cell(0,0)", (tile_x + tw + 5, tile_y + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # Draw all matched tile locations
+        for mx, my in matches:
+            cv2.rectangle(debug_img, (mx, my), (mx + tw, my + th), (255, 0, 255), 1)
+        
+        cv2.imwrite("debug_calibration.png", debug_img)
+        logging.info(f"Found {len(matches)} closed tiles. Top-left tile at window ({tile_x}, {tile_y}), Screen origin ({origin_x}, {origin_y})")
+        
         return {
             "origin_x": origin_x,
             "origin_y": origin_y,
@@ -98,48 +172,63 @@ class Vision:
         }
 
     def analyze_board(self, board_info):
-        """
-        Analyze the grid and return a logical matrix.
-        board_info: {origin_x, origin_y, cell_w, cell_h, rows, cols}
-        """
         screen = self.get_screenshot()
-        rows = board_info.get('rows', 9) # Default to 9
-        cols = board_info.get('cols', 9) # Default to 9
+        rows = board_info.get('rows', 9)
+        cols = board_info.get('cols', 9)
         
-        matrix = np.full((rows, cols), -1, dtype=int) # -1: Unknown, 0-8: Numbers, 9: Mine, 10: Flag
+        matrix = np.full((rows, cols), -1, dtype=int)
+        
+        rel_origin_x = board_info['origin_x'] - self.window_offset_x
+        rel_origin_y = board_info['origin_y'] - self.window_offset_y
         
         for r in range(rows):
             for c in range(cols):
-                x = board_info['origin_x'] + (c * board_info['cell_w']) - board_info['cell_w'] // 2
-                y = board_info['origin_y'] + (r * board_info['cell_h']) - board_info['cell_h'] // 2
+                x = rel_origin_x + (c * board_info['cell_w']) - board_info['cell_w'] // 2
+                y = rel_origin_y + (r * board_info['cell_h']) - board_info['cell_h'] // 2
                 
-                # Crop the cell
+                # Skip cells that fall outside the captured window area
+                if (x < 0 or y < 0 or
+                    x + board_info['cell_w'] > screen.shape[1] or
+                    y + board_info['cell_h'] > screen.shape[0]):
+                    logging.warning(f"Cell ({r},{c}) at crop ({x},{y}) outside screenshot bounds ({screen.shape[1]}x{screen.shape[0]}). Marking as closed.")
+                    matrix[r, c] = -1
+                    continue
+                
                 cell_img = screen[y : y + board_info['cell_h'], x : x + board_info['cell_w']]
                 
-                # Match against tile templates
+                if "closed_tile.png" in self.templates:
+                    res_closed = cv2.matchTemplate(cell_img, self.templates["closed_tile.png"], cv2.TM_CCOEFF_NORMED)
+                    _, max_closed, _, _ = cv2.minMaxLoc(res_closed)
+                    if max_closed > 0.9:
+                        matrix[r, c] = -1
+                        continue
+                
+                matched = False
                 for name, template in self.templates.items():
-                    # Only match files in assets/tiles
-                    if not name.endswith('.png'): continue
+                    if not name.endswith('.png') or name == "closed_tile.png":
+                        continue
                     
-                    # Simple template match for the small cell image
                     res = cv2.matchTemplate(cell_img, template, cv2.TM_CCOEFF_NORMED)
                     _, max_val, _, _ = cv2.minMaxLoc(res)
                     
-                    if max_val > 0.9: # High threshold for cell internal match
-                        # Map filename (e.g., '1.png', 'mine.png') to value
+                    if max_val > 0.85:
                         val = self._map_template_to_value(name)
                         matrix[r, c] = val
+                        matched = True
                         break
+                
+                if not matched:
+                    matrix[r, c] = -2
         
         return matrix
 
     def _map_template_to_value(self, name):
-        """Helper to convert filename to matrix value"""
         name = name.lower()
         if name == 'closed_tile.png': return -1
+        if name in ('open_blank.png', 'blank.png'): return -2
         if name == 'mine.png': return 9
         if name == 'flag.png': return 10
         try:
             return int(''.join(filter(str.isdigit, name)))
         except ValueError:
-            return -1
+            return -2
