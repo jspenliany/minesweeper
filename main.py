@@ -159,12 +159,12 @@ class MinesweeperBot:
         logging.info("Calibration OK. Pressing F2 to start fresh game...")
         self._focus_game_window()
         pyautogui.press('f2')
-        time.sleep(0.3)
+        time.sleep(1)
         # F2 during an active game triggers a "新游戏" confirmation dialog
         if "新游戏" in get_foreground_window_title():
             logging.info("New Game dialog detected after F2. Confirming with Alt+N...")
             pyautogui.hotkey('alt', 'n')
-            time.sleep(0.3)
+            time.sleep(0.5)
         self.state = "FIRST_MOVE"
 
     def _handle_first_move(self):
@@ -198,7 +198,7 @@ class MinesweeperBot:
             logging.info("Game over dialog detected! Pressing Alt+P to start new game.")
             hwnd = user32.GetForegroundWindow()
             user32.SetForegroundWindow(hwnd)
-            time.sleep(0.1)
+            time.sleep(3)
             pyautogui.hotkey('alt', 'p')
             time.sleep(0.5)
             self.state = "FIRST_MOVE"
@@ -208,9 +208,9 @@ class MinesweeperBot:
         if "新游戏" in title:
             logging.info("New Game dialog detected! Pressing Alt+K to return to game.")
             hwnd = user32.GetForegroundWindow()
-            time.sleep(0.1)
+            time.sleep(1)
             pyautogui.hotkey('alt', 'k')
-            time.sleep(0.3)
+            time.sleep(0.5)
             return True
         
         return False
@@ -233,11 +233,16 @@ class MinesweeperBot:
             'col_xs': self.calib.get('col_xs') if self.calib else None,
             'row_ys': self.calib.get('row_ys') if self.calib else None,
         }
-        matrix = self.board.analyze_board(board_info)
+        matrix, scores = self.board.analyze_board(board_info)
         
         logging.info("--- Current Logical Board ---")
-        for row in matrix:
-            logging.info("  " + " ".join(f"{v:2d}" for v in row))
+        for r in range(self.rows):
+            cells = []
+            for c in range(self.cols):
+                v = matrix[r, c]
+                s = scores[r, c]
+                cells.append(f"({v},{s*100:.0f}%)")
+            logging.info("  " + " ".join(cells))
         logging.info("--------------------------------")
 
         self.solver.update_grid(matrix)
@@ -252,7 +257,7 @@ class MinesweeperBot:
         if action == 'CLICK':
             logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(0.3)
+            time.sleep(1)
             if self._handle_dialogs(): return
         elif action == 'MARK':
             r, c = coords
@@ -273,14 +278,14 @@ class MinesweeperBot:
             # 4. Right-click to place flag
             self.controller.click_cell(r, c, right_click=True)
             self.board.mark_cell(r, c)
-            time.sleep(0.3)
+            time.sleep(1)
             if self._handle_dialogs(): return
             # 5. Post-mark cascade
             self._cascade_flag_clicks()
         elif action == 'GUESS':
             logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(0.3)
+            time.sleep(1)
             if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
@@ -305,14 +310,14 @@ class MinesweeperBot:
                 'col_xs': self.calib.get('col_xs') if self.calib else None,
                 'row_ys': self.calib.get('row_ys') if self.calib else None,
             }
-            matrix = self.board.analyze_board(board_info)
+            matrix, _ = self.board.analyze_board(board_info)
             self.solver.update_grid(matrix)
             action, coords, reason = self.solver.solve()
             if action == 'CLICK':
                 logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
                 self.controller.click_cell(coords[0], coords[1], right_click=False)
-                time.sleep(0.3)
+                time.sleep(1)
                 if self._handle_dialogs():
                     return
             elif action == 'MARK':
@@ -320,7 +325,7 @@ class MinesweeperBot:
                 self._focus_game_window()
                 self.controller.click_cell(coords[0], coords[1], right_click=True)
                 self.board.mark_cell(coords[0], coords[1])
-                time.sleep(0.3)
+                time.sleep(1)
                 if self._handle_dialogs():
                     return
             else:

@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
 import logging
-from src.capture import Capture
-from src.matcher import Matcher
 
 class Board:
     def __init__(self, capture, matcher, expected_cols=30,
@@ -168,49 +166,75 @@ class Board:
         crop_h = tile_template.shape[0] if tile_template is not None else int(round(board_info['cell_h']))
 
         matrix = np.full((rows, cols), -1, dtype=int)
+        scores = np.full((rows, cols), 0.0, dtype=float)
 
         ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
         oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
 
         for r in range(rows):
             for c in range(cols):
-                x = int(round(ox - crop_w / 2 + c * board_info['cell_w']))
-                y = int(round(oy - crop_h / 2 + r * board_info['cell_h']))
+                col_xs = board_info.get('col_xs')
+                row_ys = board_info.get('row_ys')
+                if col_xs and c < len(col_xs):
+                    x = col_xs[c]
+                else:
+                    x = int(round(ox - crop_w / 2 + c * board_info['cell_w']))
+                if row_ys and r < len(row_ys):
+                    y = row_ys[r]
+                else:
+                    y = int(round(oy - crop_h / 2 + r * board_info['cell_h']))
 
                 if (x < 0 or y < 0 or
                     x + crop_w > screen.shape[1] or
                     y + crop_h > screen.shape[0]):
                     logging.warning(f"Cell ({r},{c}) at crop ({x},{y}) outside screenshot bounds ({screen.shape[1]}x{screen.shape[0]}). Marking as closed.")
                     matrix[r, c] = -1
+                    scores[r, c] = 0.0
                     continue
 
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
 
                 matched = False
                 for name, template in self.matcher.templates.items():
+                    logging.info(f"Cell ({r},{c}) Matching {name}...before filtering. close , blank")
                     if not name.endswith('.png') or name in ("closed_tile.png", "open_blank.png", "blank.png"):
                         continue
+                    logging.info(f"Matching {name}...before filtering. shape {cell_img.shape}")
                     if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
                         continue
                     score = self.matcher.match_cell(cell_img, name)
+                    logging.info(f"Matching {name}...after score {score}")
                     if score > self.cell_threshold:
                         val = self.matcher.map_value(name)
                         matrix[r, c] = val
+                        scores[r, c] = score
                         matched = True
                         break
 
                 if matched:
                     continue
 
-                # Check closed tile first (closed cells look like open blanks inside)
-                if self.matcher.match_cell(cell_img, "closed_tile.png") > self.closed_threshold:
+                # Closed-tile template matching (works with exact NMS positions)
+                closed_score = self.matcher.match_cell(cell_img, "closed_tile.png")
+                open_score = self.matcher.match_cell(cell_img, "open_blank.png")
+                if closed_score > 0.70:
                     matrix[r, c] = -1
-                elif self.matcher.match_cell(cell_img, "open_blank.png") > 0.95:
+                    scores[r, c] = closed_score
+                elif open_score > 0.95:
                     matrix[r, c] = -2
+                    scores[r, c] = open_score
                 else:
-                    matrix[r, c] = -1
+                    # Fallback: pixel variance
+                    _, stddev = cv2.meanStdDev(cell_img)
+                    variance = np.mean(stddev)
+                    if variance > 7.0:
+                        matrix[r, c] = -1
+                        scores[r, c] = closed_score
+                    else:
+                        matrix[r, c] = -2
+                        scores[r, c] = open_score
 
-        return matrix
+        return matrix, scores
 
     def mark_cell(self, r, c):
         self.marked_cells.add((r, c))
