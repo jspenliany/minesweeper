@@ -124,14 +124,21 @@ class MinesweeperBot:
             self.state = "IDLE"
 
     def _save_calibration_preview(self, calib):
-        """Save an annotated screenshot with corner circles for visual verification (non-destructive)."""
-        self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
+        """Save an annotated screenshot with corner circles (non-destructive).
+        Uses step-based positions; no NMS data required.
+        """
         self._focus_game_window()
         time.sleep(0.3)
-        # Use capture.get_screenshot() to get window client image with fresh offset
         final_screen = self.capture.get_screenshot()
-        ox = calib['origin_x'] - self.capture.window_offset_x
-        oy = calib['origin_y'] - self.capture.window_offset_y
+        step = int(round(calib['cell_w']))
+        logging.info(f"Preview: win_ox={calib['win_ox']}, win_oy={calib['win_oy']}, "
+                     f"step={step}, "
+                     f"n_cols={calib.get('cols')}, n_rows={calib.get('rows')}")
+        # Draw green vertical lines at all column centers
+        mid_row_y = int(calib['win_oy'] + (self.rows // 2) * step + 0.5)
+        for c in range(self.cols):
+            sx = int(calib['win_ox'] + c * step + 0.5)
+            cv2.line(final_screen, (sx, mid_row_y - 10), (sx, mid_row_y + 10), (0, 255, 0), 1)
         corners = [
             (0, 0, "TL"),
             (0, self.cols - 1, "TR"),
@@ -139,12 +146,13 @@ class MinesweeperBot:
             (self.rows - 1, self.cols - 1, "BR"),
         ]
         for r, c, name in corners:
-            sx = int(round(ox + c * self.controller.cell_w))
-            sy = int(round(oy + r * self.controller.cell_h))
+            sx = int(calib['win_ox'] + c * step + 0.5)
+            sy = int(calib['win_oy'] + r * step + 0.5)
             cv2.circle(final_screen, (sx, sy), 8, (0, 0, 255), 2)
-            cv2.putText(final_screen, name, (sx + 10, sy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.putText(final_screen, f"{name}({sx},{sy})", (sx + 10, sy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         cv2.imwrite("calibration_test_final.png", final_screen)
-        logging.info("Saved non-destructive 'calibration_test_final.png' for visual verification.")
+        logging.info("Saved calibration_test_final.png with diagnostic markers.")
 
     def _handle_test_calibration(self):
         logging.info("State: TEST_CALIBRATION. Detecting board grid...")
@@ -155,6 +163,8 @@ class MinesweeperBot:
             self.state = "IDLE"
             return
 
+        self.rows = calib.get('rows', self.rows)
+        self.cols = calib.get('cols', self.cols)
         self._save_calibration_preview(calib)
         logging.info("Calibration OK. Pressing F2 to start fresh game...")
         self._focus_game_window()
@@ -175,12 +185,40 @@ class MinesweeperBot:
             self.state = "IDLE"
             return
         self.calib = calib
+        self.closed_baseline = None
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
+
+        # Compute per-cell closed_tile baseline from the fresh all-closed board
+        board_info = {
+            'origin_x': calib['origin_x'],
+            'origin_y': calib['origin_y'],
+            'cell_w': calib['cell_w'],
+            'cell_h': calib['cell_h'],
+            'rows': self.rows,
+            'cols': self.cols,
+            'win_ox': calib.get('win_ox'),
+            'win_oy': calib.get('win_oy'),
+        }
+        self.closed_baseline = self.board.compute_closed_baseline(board_info)
+        logging.info(f"Closed baseline range: {self.closed_baseline.min():.2f} ~ {self.closed_baseline.max():.2f}")
+
+        # Log initial board state (pre-first-click) to verify no false positives
+        board_info['closed_baseline'] = self.closed_baseline
+        init_matrix, init_scores = self.board.analyze_board(board_info)
+        logging.info("--- Initial Board (pre-first-move) ---")
+        for r in range(self.rows):
+            cells = []
+            for c in range(self.cols):
+                cells.append(f"({init_matrix[r,c]},{init_scores[r,c]*100:.0f}%)")
+            logging.info("  " + " ".join(cells))
+        logging.info("--------------------------------------")
+
         r, c = self.rows // 2, self.cols // 2
         self._focus_game_window()
         self.controller.click_cell(r, c)
-        logging.info(f"First move at ({r}, {c}). Entering PLAYING state.")
+        logging.info(f"First move at ({r}, {c}). Waiting 5 seconds before entering PLAYING state.")
+        time.sleep(5)
         self.state = "PLAYING"
 
     def _handle_dialogs(self):
@@ -230,8 +268,7 @@ class MinesweeperBot:
             'cols': self.cols,
             'win_ox': self.calib.get('win_ox') if self.calib else None,
             'win_oy': self.calib.get('win_oy') if self.calib else None,
-            'col_xs': self.calib.get('col_xs') if self.calib else None,
-            'row_ys': self.calib.get('row_ys') if self.calib else None,
+            'closed_baseline': self.closed_baseline,
         }
         matrix, scores = self.board.analyze_board(board_info)
         
@@ -257,7 +294,7 @@ class MinesweeperBot:
         if action == 'CLICK':
             logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(1)
+            time.sleep(5)
             if self._handle_dialogs(): return
         elif action == 'MARK':
             r, c = coords
@@ -285,7 +322,7 @@ class MinesweeperBot:
         elif action == 'GUESS':
             logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(1)
+            time.sleep(5)
             if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
@@ -307,8 +344,7 @@ class MinesweeperBot:
                 'cols': self.cols,
                 'win_ox': self.calib.get('win_ox') if self.calib else None,
                 'win_oy': self.calib.get('win_oy') if self.calib else None,
-                'col_xs': self.calib.get('col_xs') if self.calib else None,
-                'row_ys': self.calib.get('row_ys') if self.calib else None,
+                'closed_baseline': self.closed_baseline,
             }
             matrix, _ = self.board.analyze_board(board_info)
             self.solver.update_grid(matrix)
@@ -317,7 +353,7 @@ class MinesweeperBot:
                 logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
                 self.controller.click_cell(coords[0], coords[1], right_click=False)
-                time.sleep(1)
+                time.sleep(5)
                 if self._handle_dialogs():
                     return
             elif action == 'MARK':

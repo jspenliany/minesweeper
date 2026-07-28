@@ -7,23 +7,30 @@ from ctypes import wintypes
 
 user32 = ctypes.windll.user32
 
-def find_window_by_title(keywords):
-    hwnd = None
+def find_window_by_title(keywords, target_w=1033, target_h=604, tolerance=50):
+    candidates = []
     def enum_callback(handle, _):
-        nonlocal hwnd
         length = user32.GetWindowTextLengthW(handle) + 1
         buffer = ctypes.create_unicode_buffer(length)
         user32.GetWindowTextW(handle, buffer, length)
         title = buffer.value
         for kw in keywords:
             if kw in title:
-                hwnd = handle
-                return False
+                # Check visibility and client size
+                if not user32.IsWindowVisible(handle):
+                    return True
+                rect = wintypes.RECT()
+                user32.GetClientRect(handle, ctypes.byref(rect))
+                if abs(rect.right - target_w) <= tolerance and abs(rect.bottom - target_h) <= tolerance:
+                    candidates.append((handle, title))
+                break
         return True
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     callback = enum_proc(enum_callback)
     user32.EnumWindows(callback, 0)
-    return hwnd
+    if candidates:
+        return candidates[0][0]
+    return None
 
 class Capture:
     def __init__(self):

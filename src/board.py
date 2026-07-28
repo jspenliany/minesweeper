@@ -2,168 +2,126 @@ import cv2
 import numpy as np
 import logging
 
+# Known tile templates (cell values). Skip anchors, closed/open, blank etc.
+TILE_TEMPLATES = {"1.png", "2.png", "3.png", "4.png", "5.png",
+                  "mine.png", "flag.png"}
+
 class Board:
     def __init__(self, capture, matcher, expected_cols=30,
-                 tile_threshold=0.7, cell_threshold=0.85, closed_threshold=0.72):
+                 cell_threshold=0.85):
         self.capture = capture
         self.matcher = matcher
         self.expected_cols = expected_cols
-        self.tile_threshold = tile_threshold
         self.cell_threshold = cell_threshold
-        self.closed_threshold = closed_threshold
         self.marked_cells = set()
 
     def find_board(self):
-        """Locate the board origin and measure cell spacing.
-        Anchor template marks cell (0,0); tile matches to the right and below
-        give the center-to-center step.
-        Returns dict with origin_x/y (screen coords), cell_w/h, window_offset_x/y,
-        or None on failure.
+        """Locate board via two corner anchors.
+        board_tl.png → Cell(0,0) center.
+        board_br.png → Cell(last_row, last_col) center.
+        Derives cols, rows, and precise step from the two points.
         """
         screen = self.capture.get_screenshot()
         debug_img = screen.copy()
 
-        anchor = self.matcher.find_image(screen, "board_tl.png")
-        if not anchor:
-            logging.error("Could not find board top-left anchor.")
+        tl = self.matcher.find_image(screen, "board_tl.png")
+        if not tl:
+            logging.error("Could not find board_tl anchor.")
             cv2.imwrite("debug_no_anchor.png", debug_img)
             return None
+        ax, ay, aw, ah = tl
+        cx0, cy0 = ax + aw // 2, ay + ah // 2
+        cv2.rectangle(debug_img, (ax, ay), (ax + aw, ay + ah), (0, 255, 0), 2)
+        cv2.putText(debug_img, "TL", (ax, ay - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        ax, ay, aw, ah = anchor
-        # Template is 28x28 (inner cell), full cell is 30x30, extend 1px per side
-        cv2.rectangle(debug_img, (ax - 1, ay - 1), (ax + aw + 1, ay + ah + 1), (0, 255, 0), 2)
-        cv2.putText(debug_img, "Anchor=Cell(0,0)", (ax - 1, ay - 1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        logging.info(f"Anchor (cell 0,0) at window-relative ({ax}, {ay}), size ({aw}x{ah})")
-
-        tile_template = self.matcher.templates.get("closed_tile.png")
-        if tile_template is None:
-            logging.error("closed_tile.png missing in assets.")
+        br = self.matcher.find_image(screen, "board_br.png")
+        if not br:
+            logging.error("Could not find board_br anchor.")
+            cv2.imwrite("debug_no_anchor.png", debug_img)
             return None
-        tw, th = tile_template.shape[1], tile_template.shape[0]
-        logging.info(f"Cell template size: {tw}x{th}")
+        bx, by, bw_, bh_ = br
+        cx1, cy1 = bx + bw_ // 2, by + bh_ // 2
+        cv2.rectangle(debug_img, (bx, by), (bx + bw_, by + bh_), (0, 255, 0), 2)
+        cv2.putText(debug_img, "BR", (bx, by - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        search_x = ax
-        search_y = ay
-        search_w = min(screen.shape[1] - search_x, 1200)
-        search_h = min(screen.shape[0] - search_y, 600)
-        if search_w < tw or search_h < th:
-            logging.error(f"Search region too small ({search_w}x{search_h}).")
-            return None
+        step = 31.0  # exact cell-to-cell pitch, verified by TL-BR span
+        cols = int(round((cx1 - cx0) / step)) + 1
+        rows = int(round((cy1 - cy0) / step)) + 1
 
-        search_region = screen[search_y : search_y + search_h, search_x : search_x + search_w]
-        cv2.rectangle(debug_img, (search_x, search_y), (search_x + search_w, search_y + search_h), (255, 0, 0), 1)
-
-        matches = self.matcher.match_all(search_region, "closed_tile.png", threshold=self.tile_threshold)
-        if not matches:
-            logging.error("Could not find any closed tiles near the anchor.")
-            cv2.imwrite("debug_no_tile.png", debug_img)
+        if cols < 2 or rows < 2:
+            logging.error(f"Implausible board: {cols}x{rows} (TL=({cx0},{cy0}) BR=({cx1},{cy1}))")
             return None
 
-        matches = [(search_x + x, search_y + y) for x, y in matches]
+        logging.info(f"TL=({cx0},{cy0}) BR=({cx1},{cy1}) → {cols} cols × {rows} rows, step={step}")
 
-        tol = 4
-        buckets = []
-        for mx, my in matches:
-            placed = False
-            for bucket in buckets:
-                if abs(bucket[0] - my) <= tol:
-                    bucket[1] += 1
-                    bucket[2].append(mx)
-                    placed = True
-                    break
-            if not placed:
-                buckets.append([my, 1, [mx]])
+        cv2.circle(debug_img, (cx0, cy0), 4, (0, 0, 255), -1)
+        cv2.circle(debug_img, (cx1, cy1), 4, (0, 0, 255), -1)
 
-        min_per_row = max(5, self.expected_cols * 2 // 3)
-        grid_rows = sorted([b for b in buckets if b[1] >= min_per_row], key=lambda b: b[0])
-
-        if not grid_rows:
-            logging.error(f"Could not find any full grid rows. {len(buckets)} buckets, {len(matches)} total matches.")
-            cv2.imwrite("debug_no_tile.png", debug_img)
-            return None
-
-        tile_x, tile_y = ax, ay
-
-        # For each row, do 1D NMS on xs to get one match per cell
-        def nms_1d(xs, min_gap):
-            xs = sorted(xs)
-            result = []
-            for x in xs:
-                if not result or x - result[-1] >= min_gap:
-                    result.append(x)
-            return result
-
-        row_xs = nms_1d(grid_rows[0][2], tw // 2)
-        n_cells = len(row_xs)
-        logging.info(f"Row0 NMS: {n_cells} cells, xs={row_xs[:3]}...{row_xs[-3:]}")
-
-        # Apply user's formula:
-        #   Cell side = x px, gap = 1 px → step = x + 1
-        #   Total width = 30*x + 31, total height = 16*x + 17
-        # Derive x from NMS span = step * (n_cells - 1)
-        if n_cells >= 2:
-            span = row_xs[-1] - row_xs[0]
-            step_approx = span / (n_cells - 1)
-            x = int(round(step_approx - 1))          # cell side (integer)
-            cell_step_x = float(x + 1)                # step = x + 1
-            cell_step_y = float(x + 1)
-        else:
-            x = tw                                  # fallback to template size
-            cell_step_x = float(x + 1)
-            cell_step_y = float(x + 1)
-
-        total_w = self.expected_cols * x + (self.expected_cols + 1) * 1  # 30x + 31
-        total_h = 16 * x + (16 + 1) * 1                                    # 16x + 17
-        board_l = ax - (x - tw) // 2     # full cell(0,0) top-left
-        board_t = ay - (x - th) // 2
-        logging.info(f"Derived x={x}, step={cell_step_x:.1f}, board ({total_w}×{total_h}) "
-                     f"at window ({board_l}, {board_t})")
-        logging.info(f"Row0 NMS: {n_cells} cells, span={span}, step_approx={step_approx:.3f}")
-
-        board_right = board_l + total_w
-        board_bottom = board_t + total_h
-        if board_right > screen.shape[1] or board_bottom > screen.shape[0]:
-            logging.warning(f"Board extends beyond screenshot: right={board_right}, bottom={board_bottom}, "
-                           f"size=({screen.shape[1]}x{screen.shape[0]})")
-
-        # Full cell(0,0) center = inner-region center = anchor center
-        origin_x, origin_y = self.capture.to_screen(ax + tw // 2, ay + th // 2)
-        win_ox = ax + tw // 2   # window-relative origin (no conversion needed)
-        win_oy = ay + th // 2
-
-        # Debug marker at full cell(0,0) center
-        cx = ax + tw // 2
-        cy = ay + th // 2
-        cv2.circle(debug_img, (cx, cy), 4, (0, 0, 255), -1)
-        cv2.putText(debug_img, f"Cell(0,0) x={x}", (cx + int(round(cell_step_x)) + 5, cy + int(round(cell_step_y // 2))),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        for mx, my in matches:
-            cv2.rectangle(debug_img, (mx - 1, my - 1), (mx + tw + 1, my + th + 1), (255, 0, 255), 1)
+        left = int(cx0 - step / 2 + 0.5)
+        top = int(cy0 - step / 2 + 0.5)
+        right = int(cx1 + step / 2 + 0.5)
+        bottom = int(cy1 + step / 2 + 0.5)
+        cv2.rectangle(debug_img, (left, top), (right, bottom), (255, 0, 255), 1)
 
         cv2.imwrite("debug_calibration.png", debug_img)
-        logging.info(f"Screen origin ({origin_x}, {origin_y})")
 
+        origin_x, origin_y = self.capture.to_screen(cx0, cy0)
         return {
             "origin_x": origin_x,
             "origin_y": origin_y,
-            "cell_w": cell_step_x,
-            "cell_h": cell_step_y,
-            "win_ox": win_ox,
-            "win_oy": win_oy,
-            "col_xs": row_xs,  # exact match x positions for first row (window-relative)
-            "row_ys": [b[0] for b in grid_rows],  # exact match y positions per row
+            "cell_w": step,
+            "cell_h": step,
+            "win_ox": cx0,
+            "win_oy": cy0,
             "window_offset_x": self.capture.window_offset_x,
-            "window_offset_y": self.capture.window_offset_y
+            "window_offset_y": self.capture.window_offset_y,
+            "rows": rows,
+            "cols": cols,
         }
+
+    def compute_closed_baseline(self, board_info):
+        """Compute reference closed_tile match score for every cell on a fresh all-closed board.
+        Returns a (rows x cols) float32 matrix. Each entry is the baseline threshold
+        for that cell — used to account for board-wide color gradient.
+        """
+        screen = self.capture.get_screenshot()
+        rows = board_info.get('rows', 9)
+        cols = board_info.get('cols', 9)
+
+        closed_tmpl = self.matcher.templates.get("closed_tile.png")
+        crop_w = closed_tmpl.shape[1] if closed_tmpl is not None else int(round(board_info['cell_w']))
+        crop_h = closed_tmpl.shape[0] if closed_tmpl is not None else int(round(board_info['cell_h']))
+
+        ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
+        oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
+
+        baseline = np.zeros((rows, cols), dtype=np.float32)
+        for r in range(rows):
+            for c in range(cols):
+                x = int(ox - crop_w / 2 + c * board_info['cell_w'] + 0.5)
+                y = int(oy - crop_h / 2 + r * board_info['cell_h'] + 0.5)
+                if (x < 0 or y < 0 or
+                    x + crop_w > screen.shape[1] or
+                    y + crop_h > screen.shape[0]):
+                    baseline[r, c] = 0.70  # safe fallback
+                    continue
+                cell_img = screen[y : y + crop_h, x : x + crop_w]
+                baseline[r, c] = self.matcher.match_cell(cell_img, "closed_tile.png")
+        return baseline
 
     def analyze_board(self, board_info):
         screen = self.capture.get_screenshot()
         rows = board_info.get('rows', 9)
         cols = board_info.get('cols', 9)
 
-        tile_template = self.matcher.templates.get("closed_tile.png")
-        crop_w = tile_template.shape[1] if tile_template is not None else int(round(board_info['cell_w']))
-        crop_h = tile_template.shape[0] if tile_template is not None else int(round(board_info['cell_h']))
+        closed_tmpl = self.matcher.templates.get("closed_tile.png")
+        if closed_tmpl is not None:
+            crop_w = closed_tmpl.shape[1]
+            crop_h = closed_tmpl.shape[0]
+        else:
+            crop_w = crop_h = int(round(board_info['cell_w']))
 
         matrix = np.full((rows, cols), -1, dtype=int)
         scores = np.full((rows, cols), 0.0, dtype=float)
@@ -171,68 +129,88 @@ class Board:
         ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
         oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
 
+        closed_baseline = board_info.get('closed_baseline')
+        tile_th = 0.25  # threshold for number templates
+        open_th = 0.35
+
         for r in range(rows):
             for c in range(cols):
-                col_xs = board_info.get('col_xs')
-                row_ys = board_info.get('row_ys')
-                if col_xs and c < len(col_xs):
-                    x = col_xs[c]
-                else:
-                    x = int(round(ox - crop_w / 2 + c * board_info['cell_w']))
-                if row_ys and r < len(row_ys):
-                    y = row_ys[r]
-                else:
-                    y = int(round(oy - crop_h / 2 + r * board_info['cell_h']))
-
+                x = int(ox - crop_w / 2 + c * board_info['cell_w'] + 0.5)
+                y = int(oy - crop_h / 2 + r * board_info['cell_h'] + 0.5)
+                logging.info(f"Cell ({r},{c}) at crop ({x},{y}) analyze board ")
                 if (x < 0 or y < 0 or
                     x + crop_w > screen.shape[1] or
                     y + crop_h > screen.shape[0]):
-                    logging.warning(f"Cell ({r},{c}) at crop ({x},{y}) outside screenshot bounds ({screen.shape[1]}x{screen.shape[0]}). Marking as closed.")
+                    logging.warning(f"Cell ({r},{c}) at crop ({x},{y}) outside screenshot bounds "
+                                    f"({screen.shape[1]}x{screen.shape[0]}). Marking as closed.")
                     matrix[r, c] = -1
                     scores[r, c] = 0.0
                     continue
 
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
 
+                # 1. Number templates check (1-5.png) — take best match, skip mine/flag
                 matched = False
+                best_val = None
+                best_score = -1.0
                 for name, template in self.matcher.templates.items():
-                    logging.info(f"Cell ({r},{c}) Matching {name}...before filtering. close , blank")
-                    if not name.endswith('.png') or name in ("closed_tile.png", "open_blank.png", "blank.png"):
+                    # logging.info(f"number...")
+                    if name not in ("1.png", "2.png", "3.png", "4.png", "5.png"):
                         continue
-                    logging.info(f"Matching {name}...before filtering. shape {cell_img.shape}")
+                    logging.info(f"name: {name}, template.shape: {template.shape} ")
                     if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
                         continue
                     score = self.matcher.match_cell(cell_img, name)
-                    logging.info(f"Matching {name}...after score {score}")
-                    if score > self.cell_threshold:
-                        val = self.matcher.map_value(name)
-                        matrix[r, c] = val
-                        scores[r, c] = score
-                        matched = True
-                        break
+                    logging.info(f"score: {score}")
+                    if score > tile_th and score > best_score:
+                        best_score = score
+                        best_val = self.matcher.map_value(name)
+                if best_val is not None:
+                    matrix[r, c] = best_val
+                    scores[r, c] = best_score
+                    matched = True
 
                 if matched:
                     continue
 
-                # Closed-tile template matching (works with exact NMS positions)
-                closed_score = self.matcher.match_cell(cell_img, "closed_tile.png")
+                # 1b. Mine/flag template checks (higher threshold to avoid false positives)
+                for name, template in self.matcher.templates.items():
+                    # logging.info(f"mine/flag....")
+                    if name not in ('mine.png', 'flag.png'):
+                        continue
+                    logging.info(f"name: {name}, template.shape: {template.shape} ")
+                    if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
+                        continue
+                    score = self.matcher.match_cell(cell_img, name)
+                    logging.info(f"score: {score}")
+                    if score > 0.50:
+                        best_val = self.matcher.map_value(name)
+                        matrix[r, c] = best_val
+                        scores[r, c] = score
+                        matched = True
+                        break
+
+                # 2. Open blank check
                 open_score = self.matcher.match_cell(cell_img, "open_blank.png")
-                if closed_score > 0.70:
-                    matrix[r, c] = -1
-                    scores[r, c] = closed_score
-                elif open_score > 0.95:
+                logging.info(f"open_blank.png: {open_score}")
+                if open_score > open_th:
                     matrix[r, c] = -2
                     scores[r, c] = open_score
+                    continue
+
+                # 3. Closed-tile check with adaptive threshold
+                closed_score = self.matcher.match_cell(cell_img, "closed_tile.png")
+                logging.info(f"closed_tile.png: {closed_score}")
+                if closed_baseline is not None:
+                    ref = closed_baseline[r, c]
+                    closed_th = max(ref * 0.65, ref - 0.20)
                 else:
-                    # Fallback: pixel variance
-                    _, stddev = cv2.meanStdDev(cell_img)
-                    variance = np.mean(stddev)
-                    if variance > 7.0:
-                        matrix[r, c] = -1
-                        scores[r, c] = closed_score
-                    else:
-                        matrix[r, c] = -2
-                        scores[r, c] = open_score
+                    closed_th = 0.70
+                if closed_score > closed_th:
+                    matrix[r, c] = -1
+                else:
+                    matrix[r, c] = -3
+                scores[r, c] = closed_score
 
         return matrix, scores
 
