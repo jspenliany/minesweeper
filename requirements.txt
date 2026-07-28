@@ -1,0 +1,3 @@
+conda create -n minesweeper python=3.11
+conda activate minesweeper
+pip install opencv-python numpy pyautogui
