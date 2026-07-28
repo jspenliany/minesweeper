@@ -31,7 +31,8 @@ class Controller:
         button = 'right' if right_click else 'left'
         logging.info(f"Executing {button} click at row {row}, col {col} -> Screen({target_x}, {target_y})")
         
-        pyautogui.click(target_x, target_y, button=button)
+        pyautogui.moveTo(target_x, target_y)
+        pyautogui.click(button=button)
 
     def click_screen_pos(self, x, y, right_click=False):
         """直接点击屏幕绝对坐标"""

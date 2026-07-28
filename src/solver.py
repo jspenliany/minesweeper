@@ -7,10 +7,20 @@ class Solver:
         self.cols = cols
         # Status: -1: Unknown, 0-8: Number, 9: Mine, 10: Flag
         self.grid = np.full((rows, cols), -1, dtype=int)
+        self.marked_cells = set()  # Track cells we've already MARKed to prevent re-marking
         
     def update_grid(self, new_grid):
         """Update the internal state from the vision module's analysis"""
         self.grid = new_grid.copy()
+        # Force cells we've marked as mines to stay as flagged,
+        # in case vision failed to detect the flag icon
+        for r, c in self.marked_cells:
+            if self.grid[r, c] != 10 and self.grid[r, c] != 9:
+                self.grid[r, c] = 10
+        
+    def mark_cell(self, r, c):
+        """Record that we've marked a cell as a mine"""
+        self.marked_cells.add((r, c))
 
     def get_neighbors(self, r, c):
         """Get coordinates of all 8 neighbors"""
@@ -46,7 +56,11 @@ class Solver:
                 
                 # Case A: All remaining unknowns must be mines
                 if len(unknowns) == (val - len(mines)):
-                    first_u = unknowns[0]
+                    # Skip cells we've already tried marking (avoids flag→? cycling)
+                    unmarked = [u for u in unknowns if u not in self.marked_cells]
+                    if not unmarked:
+                        continue
+                    first_u = unmarked[0]
                     reason = f"Cell ({r},{c}) has value {val}, and exactly {len(unknowns)} unknown neighbors left. All must be mines."
                     return 'MARK', first_u, reason
                 

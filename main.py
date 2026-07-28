@@ -32,6 +32,7 @@ class MinesweeperBot:
         self.state = "IDLE"
         self.rows = 16
         self.cols = 30
+        self.flag_screenshot_counter = 0
 
     def run(self):
         logging.info("Minesweeper Bot started. Waiting for game...")
@@ -155,15 +156,7 @@ class MinesweeperBot:
             self.state = "IDLE"
             return
 
-        logging.info("All 4 corners opened! Coordinates correct. Starting a real game...")
-        # Start a fresh game (the test board has 4 opened cells)
-        self._focus_game_window()
-        pyautogui.hotkey('alt', 'g')
-        time.sleep(0.3)
-        pyautogui.press('f2')
-        time.sleep(0.1)
-        pyautogui.press('alt')
-        time.sleep(0.5)
+        logging.info("All 4 corners opened! Coordinates correct. Proceeding to play the existing game.")
         self.state = "FIRST_MOVE"
 
     def _handle_first_move(self):
@@ -220,7 +213,20 @@ class MinesweeperBot:
         elif action == 'MARK':
             logging.info(self.solver.get_reasoning(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=True)
+            self.solver.mark_cell(coords[0], coords[1])
             time.sleep(0.3)
+            # Capture screenshot with red circle on the marked cell
+            self.flag_screenshot_counter += 1
+            flag_img = self.vision.get_screenshot()
+            r, c = coords
+            cx = int(self.controller.origin_x + c * self.controller.cell_w - self.vision.window_offset_x)
+            cy = int(self.controller.origin_y + r * self.controller.cell_h - self.vision.window_offset_y)
+            cv2.circle(flag_img, (cx, cy), 10, (0, 0, 255), 2)
+            filename = f"flag{self.flag_screenshot_counter:04d}.png"
+            cv2.imwrite(filename, flag_img)
+            logging.info(f"Saved {filename} with marked cell ({r},{c}) circled.")
+            # Post-mark cascade: immediately check if any number neighbor now has all mines found
+            self._cascade_flag_clicks()
         elif action == 'GUESS':
             logging.info(self.solver.get_reasoning(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
@@ -230,6 +236,34 @@ class MinesweeperBot:
         if self.vision.find_image(screen, "game_over_fragment.png") or self.vision.find_image(screen, "win_fragment.png"):
             logging.info("Game end detected!")
             self.state = "RESULT"
+
+    def _cascade_flag_clicks(self, max_iter=100):
+        """After marking a flag, immediately cascade: if a number cell's flags match its value, click all safe neighbors"""
+        for _ in range(max_iter):
+            board_info = {
+                'origin_x': self.controller.origin_x,
+                'origin_y': self.controller.origin_y,
+                'cell_w': self.controller.cell_w,
+                'cell_h': self.controller.cell_h,
+                'rows': self.rows,
+                'cols': self.cols
+            }
+            matrix = self.vision.analyze_board(board_info)
+            self.solver.update_grid(matrix)
+            action, coords, reason = self.solver.solve()
+            if action == 'CLICK':
+                logging.info(f"[Cascade] {self.solver.get_reasoning(action, coords, reason)}")
+                self._focus_game_window()
+                self.controller.click_cell(coords[0], coords[1], right_click=False)
+                time.sleep(0.3)
+            elif action == 'MARK':
+                logging.info(f"[Cascade] {self.solver.get_reasoning(action, coords, reason)}")
+                self._focus_game_window()
+                self.controller.click_cell(coords[0], coords[1], right_click=True)
+                self.solver.mark_cell(coords[0], coords[1])
+                time.sleep(0.3)
+            else:
+                break
 
     def _handle_result(self):
         logging.info("State: RESULT. Game over. Looking for dialog...")

@@ -196,29 +196,36 @@ class Vision:
                 
                 cell_img = screen[y : y + board_info['cell_h'], x : x + board_info['cell_w']]
                 
-                if "closed_tile.png" in self.templates:
-                    res_closed = cv2.matchTemplate(cell_img, self.templates["closed_tile.png"], cv2.TM_CCOEFF_NORMED)
-                    _, max_closed, _, _ = cv2.minMaxLoc(res_closed)
-                    if max_closed > 0.9:
-                        matrix[r, c] = -1
-                        continue
-                
+                # Check specific templates first (flag, mine, numbers) to avoid closed_tile falsely matching
                 matched = False
                 for name, template in self.templates.items():
                     if not name.endswith('.png') or name == "closed_tile.png":
                         continue
-                    
+                    if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
+                        continue
                     res = cv2.matchTemplate(cell_img, template, cv2.TM_CCOEFF_NORMED)
                     _, max_val, _, _ = cv2.minMaxLoc(res)
-                    
                     if max_val > 0.85:
                         val = self._map_template_to_value(name)
                         matrix[r, c] = val
                         matched = True
                         break
                 
-                if not matched:
-                    matrix[r, c] = -2
+                if matched:
+                    continue
+                
+                # Then check if still closed
+                if "closed_tile.png" in self.templates:
+                    closed_tmpl = self.templates["closed_tile.png"]
+                    if cell_img.shape[0] >= closed_tmpl.shape[0] and cell_img.shape[1] >= closed_tmpl.shape[1]:
+                        res_closed = cv2.matchTemplate(cell_img, closed_tmpl, cv2.TM_CCOEFF_NORMED)
+                        _, max_closed, _, _ = cv2.minMaxLoc(res_closed)
+                        if max_closed > 0.9:
+                            matrix[r, c] = -1
+                            continue
+                
+                # Opened but nothing matched → blank
+                matrix[r, c] = -2
         
         return matrix
 
