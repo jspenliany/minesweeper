@@ -49,8 +49,8 @@ class MinesweeperBot:
         self.controller = None
         self.solver = None
         self.state = "IDLE"
-        self.rows = 16
-        self.cols = 30
+        self.rows = None
+        self.cols = None
         self.flag_screenshot_counter = 0
         self.calib = None  # latest board calibration data
 
@@ -129,19 +129,20 @@ class MinesweeperBot:
         time.sleep(0.3)
         final_screen = self.capture.get_screenshot()
         step = int(round(calib['cell_w']))
+        calib_rows = calib.get('rows', 16)
+        calib_cols = calib.get('cols', 30)
         logging.info(f"Preview: win_ox={calib['win_ox']}, win_oy={calib['win_oy']}, "
                      f"step={step}, "
-                     f"n_cols={calib.get('cols')}, n_rows={calib.get('rows')}")
-        # Draw green vertical lines at all column centers
-        mid_row_y = int(calib['win_oy'] + (self.rows // 2) * step + 0.5)
-        for c in range(self.cols):
+                     f"n_cols={calib_cols}, n_rows={calib_rows}")
+        mid_row_y = int(calib['win_oy'] + (calib_rows // 2) * step + 0.5)
+        for c in range(calib_cols):
             sx = int(calib['win_ox'] + c * step + 0.5)
             cv2.line(final_screen, (sx, mid_row_y - 10), (sx, mid_row_y + 10), (0, 255, 0), 1)
         corners = [
             (0, 0, "TL"),
-            (0, self.cols - 1, "TR"),
-            (self.rows - 1, 0, "BL"),
-            (self.rows - 1, self.cols - 1, "BR"),
+            (0, calib_cols - 1, "TR"),
+            (calib_rows - 1, 0, "BL"),
+            (calib_rows - 1, calib_cols - 1, "BR"),
         ]
         for r, c, name in corners:
             sx = int(calib['win_ox'] + c * step + 0.5)

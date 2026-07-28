@@ -9,57 +9,131 @@ class Board:
         self.expected_cols = expected_cols
         self.marked_cells = set()
 
+    @staticmethod
+    def _nms(matches, min_dist):
+        results = []
+        for m in matches:
+            mx, my = m
+            keep = True
+            for r in results:
+                if abs(mx - r[0]) < min_dist and abs(my - r[1]) < min_dist:
+                    keep = False
+                    break
+            if keep:
+                results.append(m)
+        return results
+
     def find_board(self):
-        """Locate board via two corner anchors.
-        board_tl.png → Cell(0,0) center.
-        board_br.png → Cell(last_row, last_col) center.
-        Derives cols, rows, and precise step from the two points.
-        """
         screen = self.capture.get_screenshot()
         debug_img = screen.copy()
 
-        tl = self.matcher.find_image(screen, "board_tl.png")
-        if not tl:
-            logging.error("Could not find board_tl anchor.")
-            cv2.imwrite("debug_no_anchor.png", debug_img)
+        # 1. Load anchor templates (freshly captured, match current cell size)
+        tl_tmpl = self.matcher.templates.get("board_tl.png")
+        br_tmpl = self.matcher.templates.get("board_br.png")
+        if tl_tmpl is None or br_tmpl is None:
+            logging.error("Anchor templates board_tl.png / board_br.png not loaded")
+            cv2.imwrite("debug_no_anchor_templates.png", debug_img)
             return None
-        ax, ay, aw, ah = tl
-        cx0, cy0 = ax + aw // 2, ay + ah // 2
-        cv2.rectangle(debug_img, (ax, ay), (ax + aw, ay + ah), (0, 255, 0), 2)
-        cv2.putText(debug_img, "TL", (ax, ay - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        br = self.matcher.find_image(screen, "board_br.png")
-        if not br:
-            logging.error("Could not find board_br anchor.")
-            cv2.imwrite("debug_no_anchor.png", debug_img)
+        tmpl_h, tmpl_w = tl_tmpl.shape[:2]
+
+        # 2. Match both templates, take per-pixel max
+        score_tl = cv2.matchTemplate(screen, tl_tmpl, cv2.TM_CCOEFF_NORMED)
+        score_br = cv2.matchTemplate(screen, br_tmpl, cv2.TM_CCOEFF_NORMED)
+        combined = np.maximum(score_tl, score_br)
+
+        # 3. Find local maxima in combined score map
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        dilated = cv2.dilate(combined, kernel)
+
+        threshold = 0.70
+        peaks = (combined >= threshold) & (combined == dilated)
+        y_peaks, x_peaks = np.where(peaks)
+        raw_peaks = list(zip(x_peaks, y_peaks))
+
+        if len(raw_peaks) < 10:
+            threshold = 0.60
+            peaks = (combined >= threshold) & (combined == dilated)
+            y_peaks, x_peaks = np.where(peaks)
+            raw_peaks = list(zip(x_peaks, y_peaks))
+
+        if len(raw_peaks) < 10:
+            logging.error(f"Only {len(raw_peaks)} cell peaks found (threshold={threshold})")
+            cv2.imwrite("debug_scoremap.png", (combined * 255).astype(np.uint8))
+            cv2.imwrite("debug_few_peaks.png", debug_img)
             return None
-        bx, by, bw, bh = br
-        cx1, cy1 = bx + bw // 2, by + bh // 2
-        cv2.rectangle(debug_img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-        cv2.putText(debug_img, "BR", (bx, by - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        step = 31.0  # exact cell-to-cell pitch, verified by TL-BR span
-        cols = int(round((cx1 - cx0) / step)) + 1
+        # 4. NMS to deduplicate nearby peaks from the same cell
+        filtered = self._nms(raw_peaks, max(tmpl_w, tmpl_h) * 0.4)
+
+        # Convert template top-left → cell center
+        centers = [(x + tmpl_w // 2, y + tmpl_h // 2) for x, y in filtered]
+
+        # 5. Grid fitting
+        centers_by_y = sorted(centers, key=lambda p: p[1])
+
+        # Estimate vertical step from median Y-difference
+        y_diffs = []
+        for i in range(1, len(centers_by_y)):
+            d = centers_by_y[i][1] - centers_by_y[i-1][1]
+            if d > 5:
+                y_diffs.append(d)
+        step_y_est = float(np.median(y_diffs)) if y_diffs else tmpl_h
+
+        # Group into rows
+        y_tol = step_y_est * 0.45
+        rows_list = []
+        cur = [centers_by_y[0]]
+        for pt in centers_by_y[1:]:
+            if abs(pt[1] - cur[0][1]) <= y_tol:
+                cur.append(pt)
+            else:
+                rows_list.append(sorted(cur, key=lambda p: p[0]))
+                cur = [pt]
+        rows_list.append(sorted(cur, key=lambda p: p[0]))
+
+        # Keep rows that have close to expected column count
+        valid_rows = [r for r in rows_list if len(r) >= self.expected_cols * 0.6]
+        if len(valid_rows) < 2:
+            logging.error(f"Could not form valid grid: {len(valid_rows)} valid rows out of {len(rows_list)}")
+            cv2.imwrite("debug_scoremap.png", (combined * 255).astype(np.uint8))
+            cv2.imwrite("debug_no_grid.png", debug_img)
+            return None
+
+        # Compute step from each valid row's X-span
+        row_steps = []
+        for r in valid_rows:
+            row_steps.append((r[-1][0] - r[0][0]) / (self.expected_cols - 1))
+        step = float(np.median(row_steps)) if row_steps else step_y_est
+
+        # Origin and last-cell from first/last valid row
+        cx0, cy0 = valid_rows[0][0]
+        cx1, cy1 = valid_rows[-1][-1]
+
         rows = int(round((cy1 - cy0) / step)) + 1
-
-        if cols < 2 or rows < 2:
-            logging.error(f"Implausible board: {cols}x{rows} (TL=({cx0},{cy0}) BR=({cx1},{cy1}))")
+        if rows < 2 or rows > self.expected_cols:
+            logging.error(f"Implausible rows: {rows}")
+            cv2.imwrite("debug_bad_rows.png", debug_img)
             return None
 
-        logging.info(f"TL=({cx0},{cy0}) BR=({cx1},{cy1}) → {cols} cols × {rows} rows, step={step}")
-
-        cv2.circle(debug_img, (cx0, cy0), 4, (0, 0, 255), -1)
-        cv2.circle(debug_img, (cx1, cy1), 4, (0, 0, 255), -1)
-
-        left = int(cx0 - step / 2 + 0.5)
-        top = int(cy0 - step / 2 + 0.5)
-        right = int(cx1 + step / 2 + 0.5)
-        bottom = int(cy1 + step / 2 + 0.5)
-        cv2.rectangle(debug_img, (left, top), (right, bottom), (255, 0, 255), 1)
-
+        # 6. Draw debug
+        for r in valid_rows:
+            cv2.circle(debug_img, r[0], 3, (0, 255, 0), -1)
+            cv2.circle(debug_img, r[-1], 3, (0, 255, 0), -1)
+        cv2.circle(debug_img, (cx0, cy0), 5, (0, 0, 255), -1)
+        cv2.circle(debug_img, (cx1, cy1), 5, (0, 0, 255), -1)
+        cv2.rectangle(debug_img,
+                      (int(cx0 - step / 2), int(cy0 - step / 2)),
+                      (int(cx1 + step / 2), int(cy1 + step / 2)),
+                      (255, 0, 255), 1)
         cv2.imwrite("debug_calibration.png", debug_img)
+        cv2.imwrite("debug_scoremap.png", (combined * 255).astype(np.uint8))
+
+        logging.info(f"Found {len(centers)} cells → {self.expected_cols}x{rows} grid, step={step:.1f}, "
+                     f"anchor={tmpl_w}x{tmpl_h}")
+
+        # 7. Resize all tile templates to match anchor dimensions
+        self.matcher.resize_tile_templates(tmpl_w, tmpl_h)
 
         origin_x, origin_y = self.capture.to_screen(cx0, cy0)
         return {
@@ -67,12 +141,14 @@ class Board:
             "origin_y": origin_y,
             "cell_w": step,
             "cell_h": step,
+            "visual_cell_w": tmpl_w,
+            "visual_cell_h": tmpl_h,
             "win_ox": cx0,
             "win_oy": cy0,
             "window_offset_x": self.capture.window_offset_x,
             "window_offset_y": self.capture.window_offset_y,
             "rows": rows,
-            "cols": cols,
+            "cols": self.expected_cols,
         }
 
     def compute_closed_baseline(self, board_info):
@@ -85,8 +161,10 @@ class Board:
         cols = board_info.get('cols', 9)
 
         closed_tmpl = self.matcher.templates.get("closed_tile.png")
-        crop_w = closed_tmpl.shape[1] if closed_tmpl is not None else int(round(board_info['cell_w']))
-        crop_h = closed_tmpl.shape[0] if closed_tmpl is not None else int(round(board_info['cell_h']))
+        crop_w = int(round(board_info.get('visual_cell_w',
+                    closed_tmpl.shape[1] if closed_tmpl is not None else board_info.get('cell_w', 31))))
+        crop_h = int(round(board_info.get('visual_cell_h',
+                    closed_tmpl.shape[0] if closed_tmpl is not None else board_info.get('cell_h', 31))))
 
         ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
         oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
@@ -111,11 +189,10 @@ class Board:
         cols = board_info.get('cols', 9)
 
         closed_tmpl = self.matcher.templates.get("closed_tile.png")
-        if closed_tmpl is not None:
-            crop_w = closed_tmpl.shape[1]
-            crop_h = closed_tmpl.shape[0]
-        else:
-            crop_w = crop_h = int(round(board_info['cell_w']))
+        crop_w = int(round(board_info.get('visual_cell_w',
+                    closed_tmpl.shape[1] if closed_tmpl is not None else board_info.get('cell_w', 31))))
+        crop_h = int(round(board_info.get('visual_cell_h',
+                    closed_tmpl.shape[0] if closed_tmpl is not None else board_info.get('cell_h', 31))))
 
         matrix = np.full((rows, cols), -1, dtype=int)
         scores = np.full((rows, cols), 0.0, dtype=float)

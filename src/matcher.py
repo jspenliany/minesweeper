@@ -4,7 +4,10 @@ import logging
 import os
 
 class Matcher:
-    def __init__(self, assets_path="D:/workspace/minesweeper-bot/assets"):
+    def __init__(self, assets_path=None):
+        if assets_path is None:
+            assets_path = os.path.join(os.path.dirname(__file__), "..", "assets")
+        assets_path = os.path.abspath(assets_path)
         self.templates = {}
         self.assets_path = assets_path
         self.load_templates()
@@ -72,6 +75,23 @@ class Matcher:
         res = cv2.matchTemplate(cell_img, template, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, _ = cv2.minMaxLoc(res)
         return max_val
+
+    def resize_tile_templates(self, cell_w, cell_h):
+        tile_dir = os.path.join(self.assets_path, "tiles")
+        for file in os.listdir(tile_dir):
+            key = file
+            if key in self.templates:
+                tmpl = self.templates[key]
+                if tmpl.shape[1] == cell_w and tmpl.shape[0] == cell_h:
+                    continue
+                self.templates[key] = cv2.resize(tmpl, (cell_w, cell_h), interpolation=cv2.INTER_LINEAR)
+        for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+            tmpl = self.templates.get(name)
+            if tmpl is not None:
+                digit = self._crop_digit(tmpl)
+                if digit is not None:
+                    self.templates[name.replace(".png", "_digit.png")] = digit
+        logging.info(f"Resized tiles to {cell_w}x{cell_h}")
 
     def map_value(self, name):
         name = name.lower().replace("_digit", "")
