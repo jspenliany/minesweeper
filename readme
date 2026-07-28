@@ -1,5 +1,16 @@
 this is the vibe-coding-based minesweeper-bot project
 
+## code defects#
+the current implementation version can only run on a specific mine-sweeping window size
+
+##start it by yourself#
+
+For anyone who want to run the code in win8 and above, please download the win7 package (https://win7game.com) Warning, please make sure the package is virus-free!!!
+
+I use python to implement it and I look forward to someone trying the implementation version of other languages
+
+
+
 well, the windows size is 1033x604( may be another resolution, I can not remember)
 and the current code is hard-coding
 
