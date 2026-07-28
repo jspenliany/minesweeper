@@ -15,3 +15,5 @@ well, the windows size is 1033x604( may be another resolution, I can not remembe
 and the current code is hard-coding
 
 A long time ago, i wanted to have an automatic minesweeping bot. With a tool like opencode, I have the motivation to develop this bot.
+
+this commit is milestone for fix minesweep window size
