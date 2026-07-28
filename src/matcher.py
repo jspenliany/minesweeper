@@ -20,7 +20,31 @@ class Matcher:
             for file in os.listdir(tile_dir):
                 path = os.path.join(tile_dir, file)
                 self.templates[file] = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        # Auto-crop number templates to digit-only (remove background noise)
+        for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+            tmpl = self.templates.get(name)
+            if tmpl is not None:
+                digit = self._crop_digit(tmpl)
+                if digit is not None:
+                    self.templates[name.replace(".png", "_digit.png")] = digit
         logging.info(f"Loaded {len(self.templates)} templates.")
+
+    @staticmethod
+    def _crop_digit(img):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if thresh.mean() > 127:
+            thresh = 255 - thresh
+        fg = np.where(thresh > 0)
+        if len(fg[0]) == 0:
+            return None
+        y1, y2 = int(fg[0].min()), int(fg[0].max()) + 1
+        x1, x2 = int(fg[1].min()), int(fg[1].max()) + 1
+        y1 = max(0, y1 - 1)
+        y2 = min(img.shape[0], y2 + 1)
+        x1 = max(0, x1 - 1)
+        x2 = min(img.shape[1], x2 + 1)
+        return img[y1:y2, x1:x2]
 
     def find_image(self, target_img, template_name, threshold=0.8):
         template = self.templates.get(template_name)
@@ -50,7 +74,7 @@ class Matcher:
         return max_val
 
     def map_value(self, name):
-        name = name.lower()
+        name = name.lower().replace("_digit", "")
         if name == 'closed_tile.png': return -1
         if name in ('open_blank.png', 'blank.png'): return -2
         if name == 'mine.png': return 9

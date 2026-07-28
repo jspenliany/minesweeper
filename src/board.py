@@ -2,17 +2,11 @@ import cv2
 import numpy as np
 import logging
 
-# Known tile templates (cell values). Skip anchors, closed/open, blank etc.
-TILE_TEMPLATES = {"1.png", "2.png", "3.png", "4.png", "5.png",
-                  "mine.png", "flag.png"}
-
 class Board:
-    def __init__(self, capture, matcher, expected_cols=30,
-                 cell_threshold=0.85):
+    def __init__(self, capture, matcher, expected_cols=30):
         self.capture = capture
         self.matcher = matcher
         self.expected_cols = expected_cols
-        self.cell_threshold = cell_threshold
         self.marked_cells = set()
 
     def find_board(self):
@@ -40,9 +34,9 @@ class Board:
             logging.error("Could not find board_br anchor.")
             cv2.imwrite("debug_no_anchor.png", debug_img)
             return None
-        bx, by, bw_, bh_ = br
-        cx1, cy1 = bx + bw_ // 2, by + bh_ // 2
-        cv2.rectangle(debug_img, (bx, by), (bx + bw_, by + bh_), (0, 255, 0), 2)
+        bx, by, bw, bh = br
+        cx1, cy1 = bx + bw // 2, by + bh // 2
+        cv2.rectangle(debug_img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
         cv2.putText(debug_img, "BR", (bx, by - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
@@ -130,7 +124,7 @@ class Board:
         oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
 
         closed_baseline = board_info.get('closed_baseline')
-        tile_th = 0.25  # threshold for number templates
+        tile_th = 0.70
         open_th = 0.35
         MARGIN = 1  # remove 1px dark border from open cells before matching content templates
 
@@ -149,7 +143,7 @@ class Board:
             for c in range(cols):
                 x = int(ox - crop_w / 2 + c * board_info['cell_w'] + 0.5)
                 y = int(oy - crop_h / 2 + r * board_info['cell_h'] + 0.5)
-                logging.info(f"Cell ({r},{c}) at crop ({x},{y}) analyze board ")
+                logging.debug(f"Cell ({r},{c}) at crop ({x},{y})")
                 if (x < 0 or y < 0 or
                     x + crop_w > screen.shape[1] or
                     y + crop_h > screen.shape[0]):
@@ -171,20 +165,21 @@ class Board:
                     open_score = match_with_margin(cell_img, tmpl, MARGIN)
                 else:
                     open_score = 0.0
-                logging.info(f"open_blank.png: {open_score}")
+                logging.debug(f"open_blank.png: {open_score}")
                 if open_score > open_th and open_score > best_score:
                     best_score = open_score
                     best_val = -2
 
-                # 1b. Number templates
-                for name, template in self.matcher.templates.items():
-                    if name not in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+                # 1b. Number templates (digit-only, no background)
+                inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
+                for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+                    tmpl = self.matcher.templates.get(name.replace(".png", "_digit.png"))
+                    if tmpl is None:
                         continue
-                    logging.info(f"name: {name}, template.shape: {template.shape} ")
-                    if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
+                    if inner.shape[0] < tmpl.shape[0] or inner.shape[1] < tmpl.shape[1]:
                         continue
-                    score = match_with_margin(cell_img, template, MARGIN)
-                    logging.info(f"score: {score}")
+                    res = cv2.matchTemplate(inner, tmpl, cv2.TM_CCOEFF_NORMED)
+                    _, score, _, _ = cv2.minMaxLoc(res)
                     if score > tile_th and score > best_score:
                         best_score = score
                         best_val = self.matcher.map_value(name)
@@ -193,11 +188,9 @@ class Board:
                 for name, template in self.matcher.templates.items():
                     if name not in ('mine.png', 'flag.png'):
                         continue
-                    logging.info(f"name: {name}, template.shape: {template.shape} ")
                     if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
                         continue
                     score = match_with_margin(cell_img, template, MARGIN)
-                    logging.info(f"score: {score}")
                     if score > 0.50 and score > best_score:
                         best_score = score
                         best_val = self.matcher.map_value(name)
@@ -209,7 +202,7 @@ class Board:
 
                 # 3. Closed-tile check with adaptive threshold
                 closed_score = match_with_margin(cell_img, self.matcher.templates.get("closed_tile.png"), 0)
-                logging.info(f"closed_tile.png: {closed_score}")
+                logging.debug(f"closed_tile.png: {closed_score}")
                 if closed_baseline is not None:
                     ref = closed_baseline[r, c]
                     closed_th = max(ref * 0.65, ref - 0.20)
@@ -226,9 +219,3 @@ class Board:
     def mark_cell(self, r, c):
         self.marked_cells.add((r, c))
 
-    def apply_marks(self, grid):
-        grid = grid.copy()
-        for r, c in self.marked_cells:
-            if grid[r, c] != 10 and grid[r, c] != 9:
-                grid[r, c] = 10
-        return grid

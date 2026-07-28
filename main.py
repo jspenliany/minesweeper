@@ -2,9 +2,7 @@ import time
 import logging
 import pyautogui
 import cv2
-import numpy as np
 import ctypes
-from ctypes import wintypes
 from src.capture import Capture, find_window_by_title
 from src.matcher import Matcher
 from src.board import Board
@@ -236,7 +234,7 @@ class MinesweeperBot:
             logging.info("Game over dialog detected! Pressing Alt+P to start new game.")
             hwnd = user32.GetForegroundWindow()
             user32.SetForegroundWindow(hwnd)
-            time.sleep(3)
+            time.sleep(2)
             pyautogui.hotkey('alt', 'p')
             time.sleep(0.5)
             self.state = "FIRST_MOVE"
@@ -245,7 +243,6 @@ class MinesweeperBot:
         # New Game dialog
         if "新游戏" in title:
             logging.info("New Game dialog detected! Pressing Alt+K to return to game.")
-            hwnd = user32.GetForegroundWindow()
             time.sleep(1)
             pyautogui.hotkey('alt', 'k')
             time.sleep(0.5)
@@ -308,8 +305,8 @@ class MinesweeperBot:
             cv2.imwrite(filename, pre_img)
             logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
             # 2. Wait 5 seconds for user to review the screenshot
-            logging.info("Waiting 5 seconds for user review...")
-            time.sleep(5)
+            logging.info("Waiting 2 seconds for user review...")
+            time.sleep(2)
             # 3. Log reasoning
             logging.info(Reasoner.format(action, coords, reason))
             # 4. Right-click to place flag
