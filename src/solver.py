@@ -46,8 +46,11 @@ class Solver:
                 neighbors = self.get_neighbors(r, c)
                 unknowns = [n for n in neighbors if self.grid[n[0], n[1]] == -1]
                 mines = [n for n in neighbors if self.grid[n[0], n[1]] == 9 or self.grid[n[0], n[1]] == 10]
+                open_unrec = [n for n in neighbors if self.grid[n[0], n[1]] == -3]
                 
-                if not unknowns: continue
+                # -3 is open but unrecognized (safe, not a mine)
+                if not unknowns and not open_unrec:
+                    continue
                 
                 # Case A: All remaining unknowns must be mines
                 if len(unknowns) == (val - len(mines)):

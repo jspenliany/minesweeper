@@ -132,6 +132,18 @@ class Board:
         closed_baseline = board_info.get('closed_baseline')
         tile_th = 0.25  # threshold for number templates
         open_th = 0.35
+        MARGIN = 1  # remove 1px dark border from open cells before matching content templates
+
+        def match_with_margin(cell_img, template, margin):
+            """Match cell_img against template, both cropped to interior region."""
+            if margin > 0 and template.shape[0] > 2*margin and template.shape[1] > 2*margin:
+                inner = cell_img[margin:-margin, margin:-margin]
+                tmpl_inner = template[margin:-margin, margin:-margin]
+                res = cv2.matchTemplate(inner, tmpl_inner, cv2.TM_CCOEFF_NORMED)
+            else:
+                res = cv2.matchTemplate(cell_img, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val
 
         for r in range(rows):
             for c in range(cols):
@@ -149,57 +161,54 @@ class Board:
 
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
 
-                # 1. Number templates check (1-5.png) — take best match, skip mine/flag
-                matched = False
+                # Pick the best match among all content templates (open_blank, numbers, flag/mine)
                 best_val = None
                 best_score = -1.0
+
+                # 1a. Open blank
+                tmpl = self.matcher.templates.get("open_blank.png")
+                if tmpl is not None:
+                    open_score = match_with_margin(cell_img, tmpl, MARGIN)
+                else:
+                    open_score = 0.0
+                logging.info(f"open_blank.png: {open_score}")
+                if open_score > open_th and open_score > best_score:
+                    best_score = open_score
+                    best_val = -2
+
+                # 1b. Number templates
                 for name, template in self.matcher.templates.items():
-                    # logging.info(f"number...")
                     if name not in ("1.png", "2.png", "3.png", "4.png", "5.png"):
                         continue
                     logging.info(f"name: {name}, template.shape: {template.shape} ")
                     if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
                         continue
-                    score = self.matcher.match_cell(cell_img, name)
+                    score = match_with_margin(cell_img, template, MARGIN)
                     logging.info(f"score: {score}")
                     if score > tile_th and score > best_score:
                         best_score = score
                         best_val = self.matcher.map_value(name)
-                if best_val is not None:
-                    matrix[r, c] = best_val
-                    scores[r, c] = best_score
-                    matched = True
 
-                if matched:
-                    continue
-
-                # 1b. Mine/flag template checks (higher threshold to avoid false positives)
+                # 1c. Mine/flag templates
                 for name, template in self.matcher.templates.items():
-                    # logging.info(f"mine/flag....")
                     if name not in ('mine.png', 'flag.png'):
                         continue
                     logging.info(f"name: {name}, template.shape: {template.shape} ")
                     if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
                         continue
-                    score = self.matcher.match_cell(cell_img, name)
+                    score = match_with_margin(cell_img, template, MARGIN)
                     logging.info(f"score: {score}")
-                    if score > 0.50:
+                    if score > 0.50 and score > best_score:
+                        best_score = score
                         best_val = self.matcher.map_value(name)
-                        matrix[r, c] = best_val
-                        scores[r, c] = score
-                        matched = True
-                        break
 
-                # 2. Open blank check
-                open_score = self.matcher.match_cell(cell_img, "open_blank.png")
-                logging.info(f"open_blank.png: {open_score}")
-                if open_score > open_th:
-                    matrix[r, c] = -2
-                    scores[r, c] = open_score
+                if best_val is not None:
+                    matrix[r, c] = best_val
+                    scores[r, c] = best_score
                     continue
 
                 # 3. Closed-tile check with adaptive threshold
-                closed_score = self.matcher.match_cell(cell_img, "closed_tile.png")
+                closed_score = match_with_margin(cell_img, self.matcher.templates.get("closed_tile.png"), 0)
                 logging.info(f"closed_tile.png: {closed_score}")
                 if closed_baseline is not None:
                     ref = closed_baseline[r, c]
