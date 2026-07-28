@@ -132,9 +132,9 @@ class Vision:
         tw, th = tile_template.shape[1], tile_template.shape[0]
         logging.info(f"Cell template size: {tw}x{th}")
         
-        # 2. Search for closed tiles below the anchor (include a 1-cell overlap to avoid skipping the top row)
+        # 2. Search for closed tiles across the entire area from anchor's top edge downward
         search_x = ax
-        search_y = max(0, ay + ah - th)  # Start a bit above anchor bottom to catch the top row
+        search_y = ay  # Start from anchor's top to avoid skipping any cells
         search_w = min(screen.shape[1] - search_x, 600)
         search_h = min(screen.shape[0] - search_y, 400)
         
@@ -185,7 +185,9 @@ class Vision:
             "origin_x": origin_x,
             "origin_y": origin_y,
             "cell_w": tw,
-            "cell_h": th
+            "cell_h": th,
+            "window_offset_x": self.window_offset_x,
+            "window_offset_y": self.window_offset_y
         }
 
     def analyze_board(self, board_info):

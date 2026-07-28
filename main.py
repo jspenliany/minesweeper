@@ -11,6 +11,16 @@ from src.controller import Controller
 
 user32 = ctypes.windll.user32
 
+def get_foreground_window_title():
+    """Get the title of the currently active (foreground) window"""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    length = user32.GetWindowTextLengthW(hwnd) + 1
+    buffer = ctypes.create_unicode_buffer(length)
+    user32.GetWindowTextW(hwnd, buffer, length)
+    return buffer.value
+
 def focus_minesweeper_window():
     """Find and bring the Minesweeper window to the foreground"""
     hwnd = find_window_by_title(["扫雷", "Minesweeper", "minesweeper", "扫雷游戏"])
@@ -115,18 +125,16 @@ class MinesweeperBot:
             self.controller.click_cell(r, c)
             time.sleep(0.5)
 
-        # Save annotated screenshot showing where we clicked (before analysis, always)
+        # Save annotated screenshot showing where we clicked (full screen to avoid offset issues)
         self._focus_game_window()
         time.sleep(0.3)
-        final_screen = self.vision.get_screenshot()
-        # Use Controller's click formula for exact match with actual click positions
+        full_img = pyautogui.screenshot()
+        final_screen = cv2.cvtColor(np.array(full_img), cv2.COLOR_RGB2BGR)
         for r, c, name in corners:
-            screen_x = int(self.controller.origin_x + c * self.controller.cell_w)
-            screen_y = int(self.controller.origin_y + r * self.controller.cell_h)
-            rel_x = screen_x - self.vision.window_offset_x
-            rel_y = screen_y - self.vision.window_offset_y
-            cv2.circle(final_screen, (rel_x, rel_y), 8, (0, 0, 255), 2)
-            cv2.putText(final_screen, name, (rel_x + 10, rel_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            sx = int(self.controller.origin_x + c * self.controller.cell_w)
+            sy = int(self.controller.origin_y + r * self.controller.cell_h)
+            cv2.circle(final_screen, (sx, sy), 8, (0, 0, 255), 2)
+            cv2.putText(final_screen, name, (sx + 10, sy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         cv2.imwrite("calibration_test_final.png", final_screen)
         logging.info("Saved 'calibration_test_final.png' with annotated click positions.")
 
@@ -172,11 +180,41 @@ class MinesweeperBot:
         logging.info(f"First move at ({r}, {c}). Entering PLAYING state.")
         self.state = "PLAYING"
 
+    def _handle_dialogs(self):
+        """Check foreground window title and handle any dialogs. Returns True if a dialog was handled."""
+        title = get_foreground_window_title()
+        if not title:
+            return False
+        
+        # If the main game window is active, nothing to handle
+        if any(kw in title for kw in ["扫雷", "Minesweeper", "minesweeper"]):
+            return False
+        
+        # Game over dialog
+        if "游戏失败" in title or "Game Over" in title:
+            logging.info("Game over dialog detected! Pressing Alt+P to start new game.")
+            hwnd = user32.GetForegroundWindow()
+            user32.SetForegroundWindow(hwnd)
+            time.sleep(0.1)
+            pyautogui.hotkey('alt', 'p')
+            time.sleep(0.5)
+            self.state = "FIRST_MOVE"
+            return True
+        
+        # New Game dialog
+        if "新游戏" in title:
+            logging.info("New Game dialog detected! Pressing Alt+K to return to game.")
+            hwnd = user32.GetForegroundWindow()
+            time.sleep(0.1)
+            pyautogui.hotkey('alt', 'k')
+            time.sleep(0.3)
+            return True
+        
+        return False
+
     def _handle_playing(self):
-        # Check for game over dialog before analyzing
-        if find_window_by_title(["游戏失败", "Game Over"]):
-            logging.info("Game over dialog detected!") 
-            self.state = "RESULT"
+        # Check for dialogs at the start of every cycle
+        if self._handle_dialogs():
             return
         
         logging.info("State: PLAYING. Analyzing board...")
@@ -208,6 +246,7 @@ class MinesweeperBot:
             logging.info(self.solver.get_reasoning(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
             time.sleep(0.3)
+            if self._handle_dialogs(): return
         elif action == 'MARK':
             r, c = coords
             # 1. Screenshot with red circle BEFORE marking (documents the decision)
@@ -228,13 +267,15 @@ class MinesweeperBot:
             self.controller.click_cell(r, c, right_click=True)
             self.solver.mark_cell(r, c)
             time.sleep(0.3)
+            if self._handle_dialogs(): return
             # 5. Post-mark cascade
             self._cascade_flag_clicks()
         elif action == 'GUESS':
             logging.info(self.solver.get_reasoning(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
             time.sleep(0.3)
-
+            if self._handle_dialogs(): return
+        
         screen = self.vision.get_screenshot()
         if self.vision.find_image(screen, "game_over_fragment.png") or self.vision.find_image(screen, "win_fragment.png"):
             logging.info("Game end detected!")
@@ -269,18 +310,10 @@ class MinesweeperBot:
                 break
 
     def _handle_result(self):
-        logging.info("State: RESULT. Game over. Looking for dialog...")
+        logging.info("State: RESULT. Looking for dialogs...")
         
-        # Game over dialog: press Alt+P to start a new game
-        dialog_hwnd = find_window_by_title(["游戏失败", "Game Over"])
-        if dialog_hwnd:
-            logging.info("Game over dialog found. Pressing Alt+P to start new game.")
-            user32.SetForegroundWindow(dialog_hwnd)
-            time.sleep(0.2)
-            pyautogui.hotkey('alt', 'p')
-            time.sleep(0.5)
-            logging.info("New game started via Alt+P. Continuing.")
-            self.state = "FIRST_MOVE"
+        # Try dialog handling first
+        if self._handle_dialogs():
             return
         
         # Fallback: try to find restart button in screenshot
