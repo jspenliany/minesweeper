@@ -357,10 +357,19 @@ class MinesweeperBot:
                 if self._handle_dialogs():
                     return
             elif action == 'MARK':
+                r, c = coords
+                self.flag_screenshot_counter += 1
+                pre_img = self.capture.get_screenshot()
+                cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+                cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
+                cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
+                filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                cv2.imwrite(filename, pre_img)
+                logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
                 logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
-                self.controller.click_cell(coords[0], coords[1], right_click=True)
-                self.board.mark_cell(coords[0], coords[1])
+                self.controller.click_cell(r, c, right_click=True)
+                self.board.mark_cell(r, c)
                 time.sleep(1)
                 if self._handle_dialogs():
                     return
