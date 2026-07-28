@@ -119,13 +119,14 @@ class MinesweeperBot:
         self._focus_game_window()
         time.sleep(0.3)
         final_screen = self.vision.get_screenshot()
-        rel_ox = calib['origin_x'] - self.vision.window_offset_x
-        rel_oy = calib['origin_y'] - self.vision.window_offset_y
+        # Use Controller's click formula for exact match with actual click positions
         for r, c, name in corners:
-            cx = int(rel_ox + c * calib['cell_w'])
-            cy = int(rel_oy + r * calib['cell_h'])
-            cv2.circle(final_screen, (cx, cy), 8, (0, 0, 255), 2)
-            cv2.putText(final_screen, name, (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            screen_x = int(self.controller.origin_x + c * self.controller.cell_w)
+            screen_y = int(self.controller.origin_y + r * self.controller.cell_h)
+            rel_x = screen_x - self.vision.window_offset_x
+            rel_y = screen_y - self.vision.window_offset_y
+            cv2.circle(final_screen, (rel_x, rel_y), 8, (0, 0, 255), 2)
+            cv2.putText(final_screen, name, (rel_x + 10, rel_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         cv2.imwrite("calibration_test_final.png", final_screen)
         logging.info("Saved 'calibration_test_final.png' with annotated click positions.")
 

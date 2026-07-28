@@ -132,9 +132,9 @@ class Vision:
         tw, th = tile_template.shape[1], tile_template.shape[0]
         logging.info(f"Cell template size: {tw}x{th}")
         
-        # 2. Search for closed tiles in the region below and right of the anchor
+        # 2. Search for closed tiles below the anchor (include a 1-cell overlap to avoid skipping the top row)
         search_x = ax
-        search_y = ay + ah
+        search_y = max(0, ay + ah - th)  # Start a bit above anchor bottom to catch the top row
         search_w = min(screen.shape[1] - search_x, 600)
         search_h = min(screen.shape[0] - search_y, 400)
         
