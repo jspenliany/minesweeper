@@ -228,6 +228,8 @@ class MinesweeperBot:
             'cell_h': self.controller.cell_h,
             'rows': self.rows,
             'cols': self.cols,
+            'win_ox': self.calib.get('win_ox') if self.calib else None,
+            'win_oy': self.calib.get('win_oy') if self.calib else None,
             'col_xs': self.calib.get('col_xs') if self.calib else None,
             'row_ys': self.calib.get('row_ys') if self.calib else None,
         }
@@ -298,6 +300,8 @@ class MinesweeperBot:
                 'cell_h': self.controller.cell_h,
                 'rows': self.rows,
                 'cols': self.cols,
+                'win_ox': self.calib.get('win_ox') if self.calib else None,
+                'win_oy': self.calib.get('win_oy') if self.calib else None,
                 'col_xs': self.calib.get('col_xs') if self.calib else None,
                 'row_ys': self.calib.get('row_ys') if self.calib else None,
             }

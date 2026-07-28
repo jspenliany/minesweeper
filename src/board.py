@@ -32,8 +32,9 @@ class Board:
             return None
 
         ax, ay, aw, ah = anchor
-        cv2.rectangle(debug_img, (ax, ay), (ax + aw, ay + ah), (0, 255, 0), 2)
-        cv2.putText(debug_img, "Anchor=Cell(0,0)", (ax, ay - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        # Template is 28x28 (inner cell), full cell is 30x30, extend 1px per side
+        cv2.rectangle(debug_img, (ax - 1, ay - 1), (ax + aw + 1, ay + ah + 1), (0, 255, 0), 2)
+        cv2.putText(debug_img, "Anchor=Cell(0,0)", (ax - 1, ay - 1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         logging.info(f"Anchor (cell 0,0) at window-relative ({ax}, {ay}), size ({aw}x{ah})")
 
         tile_template = self.matcher.templates.get("closed_tile.png")
@@ -62,7 +63,7 @@ class Board:
 
         matches = [(search_x + x, search_y + y) for x, y in matches]
 
-        tol = 2
+        tol = 4
         buckets = []
         for mx, my in matches:
             placed = False
@@ -95,36 +96,51 @@ class Board:
             return result
 
         row_xs = nms_1d(grid_rows[0][2], tw // 2)
-        if len(row_xs) >= 2:
-            span_x = row_xs[-1] - row_xs[0]
-            cell_step_x = span_x / (len(row_xs) - 1)
-            logging.info(f"Row0 NMS: {len(row_xs)} cells, span_x={span_x}, step_x={cell_step_x:.4f}, xs={row_xs[:3]}...{row_xs[-3:]}")
+        n_cells = len(row_xs)
+        logging.info(f"Row0 NMS: {n_cells} cells, xs={row_xs[:3]}...{row_xs[-3:]}")
+
+        # Apply user's formula:
+        #   Cell side = x px, gap = 1 px → step = x + 1
+        #   Total width = 30*x + 31, total height = 16*x + 17
+        # Derive x from NMS span = step * (n_cells - 1)
+        if n_cells >= 2:
+            span = row_xs[-1] - row_xs[0]
+            step_approx = span / (n_cells - 1)
+            x = int(round(step_approx - 1))          # cell side (integer)
+            cell_step_x = float(x + 1)                # step = x + 1
+            cell_step_y = float(x + 1)
         else:
-            cell_step_x = float(tw)
+            x = tw                                  # fallback to template size
+            cell_step_x = float(x + 1)
+            cell_step_y = float(x + 1)
 
-        if len(grid_rows) >= 2:
-            row_ys = sorted([b[0] for b in grid_rows])
-            span_y = row_ys[-1] - row_ys[0]
-            cell_step_y = span_y / (len(row_ys) - 1)
-        else:
-            cell_step_y = float(th)
+        total_w = self.expected_cols * x + (self.expected_cols + 1) * 1  # 30x + 31
+        total_h = 16 * x + (16 + 1) * 1                                    # 16x + 17
+        board_l = ax - (x - tw) // 2     # full cell(0,0) top-left
+        board_t = ay - (x - th) // 2
+        logging.info(f"Derived x={x}, step={cell_step_x:.1f}, board ({total_w}×{total_h}) "
+                     f"at window ({board_l}, {board_t})")
+        logging.info(f"Row0 NMS: {n_cells} cells, span={span}, step_approx={step_approx:.3f}")
 
-        logging.info(f"Computed cell step: {cell_step_x}x{cell_step_y} (template was {tw}x{th})")
-        logging.info(f"Using anchor as Cell(0,0) at ({tile_x}, {tile_y})")
-
-        board_right = int(tile_x + self.expected_cols * cell_step_x)
-        board_bottom = int(tile_y + 16 * cell_step_y)
+        board_right = board_l + total_w
+        board_bottom = board_t + total_h
         if board_right > screen.shape[1] or board_bottom > screen.shape[0]:
             logging.warning(f"Board extends beyond screenshot: right={board_right}, bottom={board_bottom}, "
                            f"size=({screen.shape[1]}x{screen.shape[0]})")
 
+        # Full cell(0,0) center = inner-region center = anchor center
         origin_x, origin_y = self.capture.to_screen(ax + tw // 2, ay + th // 2)
+        win_ox = ax + tw // 2   # window-relative origin (no conversion needed)
+        win_oy = ay + th // 2
 
-        cv2.circle(debug_img, (ax + tw // 2, ay + th // 2), 4, (0, 0, 255), -1)
-        cv2.putText(debug_img, "Cell(0,0)", (ax + int(round(cell_step_x)) + 5, ay + int(round(cell_step_y // 2))),
+        # Debug marker at full cell(0,0) center
+        cx = ax + tw // 2
+        cy = ay + th // 2
+        cv2.circle(debug_img, (cx, cy), 4, (0, 0, 255), -1)
+        cv2.putText(debug_img, f"Cell(0,0) x={x}", (cx + int(round(cell_step_x)) + 5, cy + int(round(cell_step_y // 2))),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         for mx, my in matches:
-            cv2.rectangle(debug_img, (mx, my), (mx + tw, my + th), (255, 0, 255), 1)
+            cv2.rectangle(debug_img, (mx - 1, my - 1), (mx + tw + 1, my + th + 1), (255, 0, 255), 1)
 
         cv2.imwrite("debug_calibration.png", debug_img)
         logging.info(f"Screen origin ({origin_x}, {origin_y})")
@@ -134,6 +150,8 @@ class Board:
             "origin_y": origin_y,
             "cell_w": cell_step_x,
             "cell_h": cell_step_y,
+            "win_ox": win_ox,
+            "win_oy": win_oy,
             "col_xs": row_xs,  # exact match x positions for first row (window-relative)
             "row_ys": [b[0] for b in grid_rows],  # exact match y positions per row
             "window_offset_x": self.capture.window_offset_x,
@@ -146,30 +164,18 @@ class Board:
         cols = board_info.get('cols', 9)
 
         tile_template = self.matcher.templates.get("closed_tile.png")
-        crop_w = 25
-        crop_h = 25
+        crop_w = tile_template.shape[1] if tile_template is not None else int(round(board_info['cell_w']))
+        crop_h = tile_template.shape[0] if tile_template is not None else int(round(board_info['cell_h']))
 
         matrix = np.full((rows, cols), -1, dtype=int)
 
-        col_xs = board_info.get('col_xs')  # exact column positions from find_board
-        row_ys = board_info.get('row_ys')
-
-        rel_origin_y = board_info['origin_y'] - self.capture.window_offset_y
+        ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
+        oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
 
         for r in range(rows):
-            # Use exact row y if available, else fall back to step-based
-            if row_ys and r < len(row_ys):
-                row_base = row_ys[r]
-            else:
-                row_base = int(round(rel_origin_y + r * board_info['cell_h']))
             for c in range(cols):
-                # Use exact column x if available, else fall back to step-based
-                if col_xs and c < len(col_xs):
-                    col_base = col_xs[c]
-                else:
-                    col_base = int(round(board_info['origin_x'] - self.capture.window_offset_x + c * board_info['cell_w']))
-                x = col_base
-                y = row_base
+                x = int(round(ox - crop_w / 2 + c * board_info['cell_w']))
+                y = int(round(oy - crop_h / 2 + r * board_info['cell_h']))
 
                 if (x < 0 or y < 0 or
                     x + crop_w > screen.shape[1] or
@@ -196,8 +202,10 @@ class Board:
                 if matched:
                     continue
 
-                # Check if it's an opened blank cell
-                if self.matcher.match_cell(cell_img, "open_blank.png") > 0.9:
+                # Check closed tile first (closed cells look like open blanks inside)
+                if self.matcher.match_cell(cell_img, "closed_tile.png") > self.closed_threshold:
+                    matrix[r, c] = -1
+                elif self.matcher.match_cell(cell_img, "open_blank.png") > 0.95:
                     matrix[r, c] = -2
                 else:
                     matrix[r, c] = -1
