@@ -5,8 +5,10 @@ import cv2
 import numpy as np
 import ctypes
 from ctypes import wintypes
-from src.vision import Vision, find_window_by_title
-from src.solver import Solver
+from src.capture import Capture, find_window_by_title
+from src.matcher import Matcher
+from src.board import Board
+from src.solver import Solver, Reasoner
 from src.controller import Controller
 
 user32 = ctypes.windll.user32
@@ -32,25 +34,35 @@ def focus_minesweeper_window():
     logging.warning("Minesweeper window not found by title.")
     return False
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("minesweeper_bot.log", mode='w', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 
 class MinesweeperBot:
     def __init__(self):
-        self.vision = Vision()
+        self.capture = Capture()
+        self.matcher = Matcher()
+        self.board = Board(self.capture, self.matcher)
         self.controller = None
         self.solver = None
         self.state = "IDLE"
         self.rows = 16
         self.cols = 30
         self.flag_screenshot_counter = 0
+        self.calib = None  # latest board calibration data
 
     def run(self):
         logging.info("Minesweeper Bot started. Waiting for game...")
         while True:
             if self.state == "IDLE":
                 self._handle_idle()
-            elif self.state == "MAIN_MENU":
-                self._handle_main_menu()
+            elif self.state == "START_GAME":
+                self._handle_start_game()
             elif self.state == "TEST_CALIBRATION":
                 self._handle_test_calibration()
             elif self.state == "FIRST_MOVE":
@@ -69,12 +81,12 @@ class MinesweeperBot:
         if focus_minesweeper_window():
             return True
         # Fallback: click on anchor point
-        screen = self.vision.get_screenshot()
-        anchor = self.vision.find_image(screen, "board_tl.png")
+        screen = self.capture.get_screenshot()
+        anchor = self.matcher.find_image(screen, "board_tl.png")
         if anchor:
             ax, ay, aw, ah = anchor
-            sx = ax + aw // 2 + self.vision.window_offset_x
-            sy = ay + ah // 2 + self.vision.window_offset_y
+            sx = ax + aw // 2 + self.capture.window_offset_x
+            sy = ay + ah // 2 + self.capture.window_offset_y
             pyautogui.click(sx, sy)
             time.sleep(0.2)
             logging.info("Focused game window via anchor click.")
@@ -83,97 +95,88 @@ class MinesweeperBot:
 
     def _handle_idle(self):
         logging.info("State: IDLE. Searching for game window...")
-        screen = self.vision.get_screenshot()
-        if self.vision.find_image(screen, "board_tl.png"):
+        screen = self.capture.get_screenshot()
+        if self.matcher.find_image(screen, "board_tl.png"):
             logging.info("Game window detected!")
-            self.state = "MAIN_MENU"
+            self.state = "START_GAME"
+            time.sleep(2)  # Pause before F2 to avoid rapid loop
         else:
             logging.info("Game not found. Still waiting...")
 
-    def _handle_main_menu(self):
-        logging.info("State: MAIN_MENU. Starting new game via F2...")
+    def _handle_start_game(self):
+        logging.info("State: START_GAME. Starting new game via F2...")
         try:
             self._focus_game_window()
             pyautogui.press('f2')
-            time.sleep(0.5)
+            # F2 during an active game triggers a "新游戏" confirmation dialog
+            for _ in range(10):
+                time.sleep(0.1)
+                title = get_foreground_window_title()
+                if "新游戏" in title:
+                    logging.info("New Game dialog detected after F2. Confirming with Alt+N...")
+                    pyautogui.hotkey('alt', 'n')
+                    time.sleep(0.3)
+                    break
             logging.info("Pressed F2. Moving to Calibration Test state.")
             self.state = "TEST_CALIBRATION"
         except Exception as e:
             logging.error(f"Hotkeys failed: {e}")
             self.state = "IDLE"
 
-    def _handle_test_calibration(self):
-        logging.info("State: TEST_CALIBRATION. Starting a trial game to verify coordinates...")
-        calib = self.vision.calibrate_grid()
-        if not calib:
-            logging.error("Calibration failed. Returning to IDLE.")
-            self.state = "IDLE"
-            return
-
+    def _save_calibration_preview(self, calib):
+        """Save an annotated screenshot with corner circles for visual verification (non-destructive)."""
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
-
-        corners = [
-            (0, 0, "Top-Left"),
-            (0, self.cols - 1, "Top-Right"),
-            (self.rows - 1, 0, "Bottom-Left"),
-            (self.rows - 1, self.cols - 1, "Bottom-Right")
-        ]
-        
-        logging.info("Clicking the 4 corner cells to verify calibration...")
-        for r, c, name in corners:
-            self._focus_game_window()
-            self.controller.click_cell(r, c)
-            time.sleep(0.5)
-
-        # Save annotated screenshot showing where we clicked (full screen to avoid offset issues)
         self._focus_game_window()
         time.sleep(0.3)
-        full_img = pyautogui.screenshot()
-        final_screen = cv2.cvtColor(np.array(full_img), cv2.COLOR_RGB2BGR)
+        # Use capture.get_screenshot() to get window client image with fresh offset
+        final_screen = self.capture.get_screenshot()
+        ox = calib['origin_x'] - self.capture.window_offset_x
+        oy = calib['origin_y'] - self.capture.window_offset_y
+        corners = [
+            (0, 0, "TL"),
+            (0, self.cols - 1, "TR"),
+            (self.rows - 1, 0, "BL"),
+            (self.rows - 1, self.cols - 1, "BR"),
+        ]
         for r, c, name in corners:
-            sx = int(self.controller.origin_x + c * self.controller.cell_w)
-            sy = int(self.controller.origin_y + r * self.controller.cell_h)
+            sx = int(round(ox + c * self.controller.cell_w))
+            sy = int(round(oy + r * self.controller.cell_h))
             cv2.circle(final_screen, (sx, sy), 8, (0, 0, 255), 2)
-            cv2.putText(final_screen, name, (sx + 10, sy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            cv2.putText(final_screen, name, (sx + 10, sy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         cv2.imwrite("calibration_test_final.png", final_screen)
-        logging.info("Saved 'calibration_test_final.png' with annotated click positions.")
+        logging.info("Saved non-destructive 'calibration_test_final.png' for visual verification.")
 
-        board_info = {
-            'origin_x': calib['origin_x'],
-            'origin_y': calib['origin_y'],
-            'cell_w': calib['cell_w'],
-            'cell_h': calib['cell_h'],
-            'rows': self.rows,
-            'cols': self.cols
-        }
-        matrix = self.vision.analyze_board(board_info)
-
-        all_open = True
-        for r, c, name in corners:
-            val = matrix[r, c]
-            if val == -1:
-                logging.error(f"Calibration FAILED at {name} corner ({r},{c}): cell is still closed.")
-                all_open = False
-            else:
-                logging.info(f"Calibration OK at {name} corner ({r},{c}): value = {val}")
-
-        if not all_open:
-            logging.error("Calibration failed. Returning to IDLE.")
+    def _handle_test_calibration(self):
+        logging.info("State: TEST_CALIBRATION. Detecting board grid...")
+        calib = self.board.find_board()
+        if not calib:
+            logging.error("Calibration failed (grid not found). Waiting 5s before retry...")
+            time.sleep(5)
             self.state = "IDLE"
             return
 
-        logging.info("All 4 corners opened! Coordinates correct. Proceeding to play the existing game.")
+        self._save_calibration_preview(calib)
+        logging.info("Calibration OK. Pressing F2 to start fresh game...")
+        self._focus_game_window()
+        pyautogui.press('f2')
+        time.sleep(0.3)
+        # F2 during an active game triggers a "新游戏" confirmation dialog
+        if "新游戏" in get_foreground_window_title():
+            logging.info("New Game dialog detected after F2. Confirming with Alt+N...")
+            pyautogui.hotkey('alt', 'n')
+            time.sleep(0.3)
         self.state = "FIRST_MOVE"
 
     def _handle_first_move(self):
         logging.info("State: FIRST_MOVE. Calibrating fresh board...")
-        calib = self.vision.calibrate_grid()
+        calib = self.board.find_board()
         if not calib:
             logging.error("Calibration failed in FIRST_MOVE. Returning to IDLE.")
             self.state = "IDLE"
             return
+        self.calib = calib
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
-        self.solver = Solver(self.rows, self.cols)
+        self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
         r, c = self.rows // 2, self.cols // 2
         self._focus_game_window()
         self.controller.click_cell(r, c)
@@ -224,15 +227,17 @@ class MinesweeperBot:
             'cell_w': self.controller.cell_w,
             'cell_h': self.controller.cell_h,
             'rows': self.rows,
-            'cols': self.cols
+            'cols': self.cols,
+            'col_xs': self.calib.get('col_xs') if self.calib else None,
+            'row_ys': self.calib.get('row_ys') if self.calib else None,
         }
-        matrix = self.vision.analyze_board(board_info)
+        matrix = self.board.analyze_board(board_info)
         
-        print("\n--- Current Logical Board ---")
-        # Only print first 5 rows to avoid console flooding
-        print(matrix[:5])
-        print("-----------------------------\n")
-        
+        logging.info("--- Current Logical Board ---")
+        for row in matrix:
+            logging.info("  " + " ".join(f"{v:2d}" for v in row))
+        logging.info("--------------------------------")
+
         self.solver.update_grid(matrix)
         action, coords, reason = self.solver.solve()
         
@@ -243,7 +248,7 @@ class MinesweeperBot:
 
         self._focus_game_window()
         if action == 'CLICK':
-            logging.info(self.solver.get_reasoning(action, coords, reason))
+            logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
             time.sleep(0.3)
             if self._handle_dialogs(): return
@@ -251,9 +256,9 @@ class MinesweeperBot:
             r, c = coords
             # 1. Screenshot with red circle BEFORE marking (documents the decision)
             self.flag_screenshot_counter += 1
-            pre_img = self.vision.get_screenshot()
-            cx = int(self.controller.origin_x + c * self.controller.cell_w - self.vision.window_offset_x)
-            cy = int(self.controller.origin_y + r * self.controller.cell_h - self.vision.window_offset_y)
+            pre_img = self.capture.get_screenshot()
+            cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+            cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
             cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
             filename = f"flag{self.flag_screenshot_counter:04d}.png"
             cv2.imwrite(filename, pre_img)
@@ -262,50 +267,58 @@ class MinesweeperBot:
             logging.info("Waiting 5 seconds for user review...")
             time.sleep(5)
             # 3. Log reasoning
-            logging.info(self.solver.get_reasoning(action, coords, reason))
+            logging.info(Reasoner.format(action, coords, reason))
             # 4. Right-click to place flag
             self.controller.click_cell(r, c, right_click=True)
-            self.solver.mark_cell(r, c)
+            self.board.mark_cell(r, c)
             time.sleep(0.3)
             if self._handle_dialogs(): return
             # 5. Post-mark cascade
             self._cascade_flag_clicks()
         elif action == 'GUESS':
-            logging.info(self.solver.get_reasoning(action, coords, reason))
+            logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
             time.sleep(0.3)
             if self._handle_dialogs(): return
         
-        screen = self.vision.get_screenshot()
-        if self.vision.find_image(screen, "game_over_fragment.png") or self.vision.find_image(screen, "win_fragment.png"):
+        screen = self.capture.get_screenshot()
+        if self.matcher.find_image(screen, "game_over_fragment.png") or self.matcher.find_image(screen, "win_fragment.png"):
             logging.info("Game end detected!")
             self.state = "RESULT"
 
     def _cascade_flag_clicks(self, max_iter=100):
         """After marking a flag, immediately cascade: if a number cell's flags match its value, click all safe neighbors"""
         for _ in range(max_iter):
+            if self._handle_dialogs():
+                return
             board_info = {
                 'origin_x': self.controller.origin_x,
                 'origin_y': self.controller.origin_y,
                 'cell_w': self.controller.cell_w,
                 'cell_h': self.controller.cell_h,
                 'rows': self.rows,
-                'cols': self.cols
+                'cols': self.cols,
+                'col_xs': self.calib.get('col_xs') if self.calib else None,
+                'row_ys': self.calib.get('row_ys') if self.calib else None,
             }
-            matrix = self.vision.analyze_board(board_info)
+            matrix = self.board.analyze_board(board_info)
             self.solver.update_grid(matrix)
             action, coords, reason = self.solver.solve()
             if action == 'CLICK':
-                logging.info(f"[Cascade] {self.solver.get_reasoning(action, coords, reason)}")
+                logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
                 self.controller.click_cell(coords[0], coords[1], right_click=False)
                 time.sleep(0.3)
+                if self._handle_dialogs():
+                    return
             elif action == 'MARK':
-                logging.info(f"[Cascade] {self.solver.get_reasoning(action, coords, reason)}")
+                logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
                 self.controller.click_cell(coords[0], coords[1], right_click=True)
-                self.solver.mark_cell(coords[0], coords[1])
+                self.board.mark_cell(coords[0], coords[1])
                 time.sleep(0.3)
+                if self._handle_dialogs():
+                    return
             else:
                 break
 
@@ -317,14 +330,14 @@ class MinesweeperBot:
             return
         
         # Fallback: try to find restart button in screenshot
-        screen = self.vision.get_screenshot()
-        restart_btn = self.vision.find_image(screen, "restart_button.png")
+        screen = self.capture.get_screenshot()
+        restart_btn = self.matcher.find_image(screen, "restart_button.png")
         
         if restart_btn:
             self._focus_game_window()
             rx, ry, rw, rh = restart_btn
-            sx = rx + rw // 2 + self.vision.window_offset_x
-            sy = ry + rh // 2 + self.vision.window_offset_y
+            sx = rx + rw // 2 + self.capture.window_offset_x
+            sy = ry + rh // 2 + self.capture.window_offset_y
             self.controller.click_screen_pos(sx, sy)
             logging.info("Clicked 'Restart' button. Starting next game.")
             time.sleep(0.5)

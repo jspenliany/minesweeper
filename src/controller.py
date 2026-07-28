@@ -1,8 +1,6 @@
 import pyautogui
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 class Controller:
     def __init__(self, origin_x, origin_y, cell_w, cell_h):
         """

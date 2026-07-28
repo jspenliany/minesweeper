@@ -2,25 +2,20 @@ import numpy as np
 import logging
 
 class Solver:
-    def __init__(self, rows, cols):
+    def __init__(self, rows, cols, marked_cells=None):
         self.rows = rows
         self.cols = cols
         # Status: -1: Unknown, 0-8: Number, 9: Mine, 10: Flag
         self.grid = np.full((rows, cols), -1, dtype=int)
-        self.marked_cells = set()  # Track cells we've already MARKed to prevent re-marking
+        # Share marked_cells set with Board to prevent re-marking
+        self.marked_cells = marked_cells if marked_cells is not None else set()
         
     def update_grid(self, new_grid):
-        """Update the internal state from the vision module's analysis"""
+        """Update the internal state from the board analysis"""
         self.grid = new_grid.copy()
-        # Force cells we've marked as mines to stay as flagged,
-        # in case vision failed to detect the flag icon
         for r, c in self.marked_cells:
             if self.grid[r, c] != 10 and self.grid[r, c] != 9:
                 self.grid[r, c] = 10
-        
-    def mark_cell(self, r, c):
-        """Record that we've marked a cell as a mine"""
-        self.marked_cells.add((r, c))
 
     def get_neighbors(self, r, c):
         """Get coordinates of all 8 neighbors"""
@@ -92,11 +87,15 @@ class Solver:
         guess_pos = random.choice(unknowns)
         return 'GUESS', guess_pos, f"No deterministic logic available. Choosing a random safe candidate at {guess_pos}."
 
-    def get_reasoning(self, action, coords, reasoning):
-        """Format the output for the user"""
+
+
+class Reasoner:
+    """Formats Solver output into human-readable reasoning strings."""
+
+    @staticmethod
+    def format(action, coords, reasoning):
         if action == 'NONE':
             return reasoning
-        
         r, c = coords
         action_map = {'CLICK': 'Left-Click (Safe)', 'MARK': 'Right-Click (Mine)', 'GUESS': 'Guessing'}
         return f"[{action_map[action]}] at ({r}, {c}): {reasoning}"
