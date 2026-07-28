@@ -97,7 +97,7 @@ class MinesweeperBot:
         if self.matcher.find_image(screen, "board_tl.png"):
             logging.info("Game window detected!")
             self.state = "START_GAME"
-            time.sleep(1)  # Pause before F2 to avoid rapid loop
+            time.sleep(3)  # Pause before F2 to avoid rapid loop
         else:
             logging.info("Game not found. Still waiting...")
 
@@ -156,8 +156,8 @@ class MinesweeperBot:
         logging.info("State: TEST_CALIBRATION. Detecting board grid...")
         calib = self.board.find_board()
         if not calib:
-            logging.error("Calibration failed (grid not found). Waiting 5s before retry...")
-            time.sleep(1)
+            logging.error("Calibration failed (grid not found). Waiting 6s before retry...")
+            time.sleep(6)
             self.state = "IDLE"
             return
 
@@ -215,8 +215,8 @@ class MinesweeperBot:
         r, c = self.rows // 2, self.cols // 2
         self._focus_game_window()
         self.controller.click_cell(r, c)
-        logging.info(f"First move at ({r}, {c}). Waiting 5 seconds before entering PLAYING state.")
-        time.sleep(1)
+        logging.info(f"First move at ({r}, {c}). Waiting 3 seconds before entering PLAYING state.")
+        time.sleep(3)
         self.state = "PLAYING"
 
     def _handle_dialogs(self):
@@ -234,7 +234,7 @@ class MinesweeperBot:
             logging.info("Game over dialog detected! Pressing Alt+P to start new game.")
             hwnd = user32.GetForegroundWindow()
             user32.SetForegroundWindow(hwnd)
-            time.sleep(1)
+            time.sleep(2)
             pyautogui.hotkey('alt', 'p')
             time.sleep(0.5)
             self.state = "FIRST_MOVE"
@@ -245,7 +245,7 @@ class MinesweeperBot:
             logging.info("Victory dialog detected! Pressing Alt+P to start new game.")
             hwnd = user32.GetForegroundWindow()
             user32.SetForegroundWindow(hwnd)
-            time.sleep(1)
+            time.sleep(2)
             pyautogui.hotkey('alt', 'p')
             time.sleep(0.5)
             self.state = "FIRST_MOVE"
@@ -281,6 +281,7 @@ class MinesweeperBot:
         matrix, scores = self.board.analyze_board(board_info)
         
         logging.info("--- Current Logical Board ---")
+    #---------------------------print matrix-------start
         # for r in range(self.rows):
         #     cells = []
         #     for c in range(self.cols):
@@ -289,6 +290,7 @@ class MinesweeperBot:
         #         cells.append(f"({v},{s*100:.0f}%)")
         #     logging.info("  " + " ".join(cells))
         # logging.info("--------------------------------")
+    #---------------------------print matrix-------end
 
         self.solver.update_grid(matrix)
         action, coords, reason = self.solver.solve()
@@ -302,22 +304,24 @@ class MinesweeperBot:
         if action == 'CLICK':
             logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(1)
+            time.sleep(2)
             if self._handle_dialogs(): return
         elif action == 'MARK':
             r, c = coords
             # 1. Screenshot with red circle BEFORE marking (documents the decision)
             self.flag_screenshot_counter += 1
-            # pre_img = self.capture.get_screenshot()
-            # cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
-            # cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
-            # cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-            # filename = f"flag{self.flag_screenshot_counter:04d}.png"
-            # cv2.imwrite(filename, pre_img)
-            # logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
+        #-----------------------------------------------------image save-------start
+            pre_img = self.capture.get_screenshot()
+            cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+            cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
+            cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
+            filename = f"flag{self.flag_screenshot_counter:04d}.png"
+            cv2.imwrite(filename, pre_img)
+            logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
+        #-----------------------------------------------------image save-------end
             # 2. Wait 5 seconds for user to review the screenshot
             logging.info("Waiting 2 seconds for user review...")
-            time.sleep(1)
+            time.sleep(2)
             # 3. Log reasoning
             logging.info(Reasoner.format(action, coords, reason))
             # 4. Right-click to place flag
@@ -330,7 +334,7 @@ class MinesweeperBot:
         elif action == 'GUESS':
             logging.info(Reasoner.format(action, coords, reason))
             self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(1)
+            time.sleep(5)
             if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
@@ -361,12 +365,13 @@ class MinesweeperBot:
                 logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
                 self.controller.click_cell(coords[0], coords[1], right_click=False)
-                time.sleep(1)
+                time.sleep(2)
                 if self._handle_dialogs():
                     return
             elif action == 'MARK':
                 r, c = coords
                 self.flag_screenshot_counter += 1
+        #-----------------------------------------------------image save-------start
                 pre_img = self.capture.get_screenshot()
                 cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
                 cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
@@ -374,6 +379,7 @@ class MinesweeperBot:
                 filename = f"flag{self.flag_screenshot_counter:04d}.png"
                 cv2.imwrite(filename, pre_img)
                 logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
+        #-----------------------------------------------------image save-------end
                 logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
                 self.controller.click_cell(r, c, right_click=True)
