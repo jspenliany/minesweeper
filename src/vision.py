@@ -73,7 +73,7 @@ class Vision:
     def get_screenshot(self):
         """Capture the Minesweeper window client area (or full screen if window not found)"""
         win_rect = self.get_window_client_rect()
-        if win_rect and win_rect['width'] > 0 and win_rect['height'] > 0:
+        if win_rect and win_rect['width'] > 200 and win_rect['height'] > 200:
             self.window_offset_x = win_rect['left']
             self.window_offset_y = win_rect['top']
             screenshot = pyautogui.screenshot(region=(
@@ -107,11 +107,23 @@ class Vision:
         return None
 
     def calibrate_grid(self):
-        """Find the game board by scanning the entire screenshot for closed tiles.
-        Finds the top-leftmost closed tile to establish the grid origin.
+        """Find the game board using the anchor, then scan below-right for closed tiles.
+        Picks the top-leftmost tile in the search region as the grid origin.
         """
         screen = self.get_screenshot()
         debug_img = screen.copy()
+        
+        # 1. Find anchor first to constrain the search region
+        anchor = self.find_image(screen, "board_tl.png")
+        if not anchor:
+            logging.error("Could not find board top-left anchor.")
+            cv2.imwrite("debug_no_anchor.png", debug_img)
+            return None
+        
+        ax, ay, aw, ah = anchor
+        cv2.rectangle(debug_img, (ax, ay), (ax + aw, ay + ah), (0, 255, 0), 2)
+        cv2.putText(debug_img, "Anchor", (ax, ay - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        logging.info(f"Anchor found at window-relative ({ax}, {ay}), size ({aw}x{ah})")
         
         tile_template = self.templates.get("closed_tile.png")
         if tile_template is None:
@@ -120,29 +132,35 @@ class Vision:
         tw, th = tile_template.shape[1], tile_template.shape[0]
         logging.info(f"Cell template size: {tw}x{th}")
         
-        # Scan entire screenshot for closed tiles
-        res = cv2.matchTemplate(screen, tile_template, cv2.TM_CCOEFF_NORMED)
+        # 2. Search for closed tiles in the region below and right of the anchor
+        search_x = ax
+        search_y = ay + ah
+        search_w = min(screen.shape[1] - search_x, 600)
+        search_h = min(screen.shape[0] - search_y, 400)
+        
+        if search_w < tw or search_h < th:
+            logging.error(f"Search region too small ({search_w}x{search_h}).")
+            return None
+        
+        search_region = screen[search_y : search_y + search_h, search_x : search_x + search_w]
+        cv2.rectangle(debug_img, (search_x, search_y), (search_x + search_w, search_y + search_h), (255, 0, 0), 1)
+        cv2.putText(debug_img, "Search", (search_x, search_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        
+        res = cv2.matchTemplate(search_region, tile_template, cv2.TM_CCOEFF_NORMED)
         locations = np.where(res >= 0.8)
         
         if len(locations[0]) == 0:
-            logging.error("Could not find any closed tiles in the screenshot.")
+            logging.error("Could not find any closed tiles near the anchor.")
             cv2.imwrite("debug_no_tile.png", debug_img)
             return None
         
-        # Collect all match positions (top-left corners) and find the top-leftmost tile
-        matches = list(zip(locations[1], locations[0]))  # (x, y) pairs
-        matches.sort(key=lambda p: (p[1], p[0]))  # Sort by y first (topmost), then x (leftmost)
+        # 3. Find the top-leftmost tile in the search region
+        matches = [(search_x + x, search_y + y) for x, y in zip(locations[1], locations[0])]
+        matches.sort(key=lambda p: (p[1], p[0]))  # Sort by y (topmost), then x (leftmost)
         tile_x, tile_y = matches[0]
+        logging.info(f"Found {len(matches)} closed tiles. Top-left tile at ({tile_x}, {tile_y})")
         
-        # Draw anchor if found (for reference only)
-        anchor = self.find_image(screen, "board_tl.png")
-        if anchor:
-            ax, ay, aw, ah = anchor
-            cv2.rectangle(debug_img, (ax, ay), (ax + aw, ay + ah), (0, 255, 0), 2)
-            cv2.putText(debug_img, "Anchor", (ax, ay - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            logging.info(f"Anchor found at ({ax}, {ay}) for reference")
-        
-        # Validate: check if the entire board fits within the screenshot
+        # 4. Validate: check if the entire board fits within the screenshot
         board_right = tile_x + (30 * tw)
         board_bottom = tile_y + (16 * th)
         if board_right > screen.shape[1] or board_bottom > screen.shape[0]:
@@ -153,16 +171,15 @@ class Vision:
         
         origin_x, origin_y = self._screen_to_client(tile_x + tw // 2, tile_y + th // 2)
         
+        # 5. Draw results
         cv2.rectangle(debug_img, (tile_x, tile_y), (tile_x + tw, tile_y + th), (0, 255, 255), 2)
         cv2.circle(debug_img, (tile_x + tw // 2, tile_y + th // 2), 4, (0, 0, 255), -1)
         cv2.putText(debug_img, "Cell(0,0)", (tile_x + tw + 5, tile_y + th // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        
-        # Draw all matched tile locations
         for mx, my in matches:
             cv2.rectangle(debug_img, (mx, my), (mx + tw, my + th), (255, 0, 255), 1)
         
         cv2.imwrite("debug_calibration.png", debug_img)
-        logging.info(f"Found {len(matches)} closed tiles. Top-left tile at window ({tile_x}, {tile_y}), Screen origin ({origin_x}, {origin_y})")
+        logging.info(f"Screen origin ({origin_x}, {origin_y})")
         
         return {
             "origin_x": origin_x,

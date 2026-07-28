@@ -81,15 +81,12 @@ class MinesweeperBot:
             logging.info("Game not found. Still waiting...")
 
     def _handle_main_menu(self):
-        logging.info("State: MAIN_MENU. Sending hotkeys to start new game...")
+        logging.info("State: MAIN_MENU. Starting new game via F2...")
         try:
             self._focus_game_window()
-            pyautogui.hotkey('alt', 'g')
-            time.sleep(0.3)
             pyautogui.press('f2')
-            time.sleep(0.1)
-            pyautogui.press('alt')  # Dismiss the menu
-            logging.info("Sent Alt+G, F2, Alt. Moving to Calibration Test state.")
+            time.sleep(0.5)
+            logging.info("Pressed F2. Moving to Calibration Test state.")
             self.state = "TEST_CALIBRATION"
         except Exception as e:
             logging.error(f"Hotkeys failed: {e}")
@@ -211,21 +208,26 @@ class MinesweeperBot:
             self.controller.click_cell(coords[0], coords[1], right_click=False)
             time.sleep(0.3)
         elif action == 'MARK':
-            logging.info(self.solver.get_reasoning(action, coords, reason))
-            self.controller.click_cell(coords[0], coords[1], right_click=True)
-            self.solver.mark_cell(coords[0], coords[1])
-            time.sleep(0.3)
-            # Capture screenshot with red circle on the marked cell
-            self.flag_screenshot_counter += 1
-            flag_img = self.vision.get_screenshot()
             r, c = coords
+            # 1. Screenshot with red circle BEFORE marking (documents the decision)
+            self.flag_screenshot_counter += 1
+            pre_img = self.vision.get_screenshot()
             cx = int(self.controller.origin_x + c * self.controller.cell_w - self.vision.window_offset_x)
             cy = int(self.controller.origin_y + r * self.controller.cell_h - self.vision.window_offset_y)
-            cv2.circle(flag_img, (cx, cy), 10, (0, 0, 255), 2)
+            cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
             filename = f"flag{self.flag_screenshot_counter:04d}.png"
-            cv2.imwrite(filename, flag_img)
-            logging.info(f"Saved {filename} with marked cell ({r},{c}) circled.")
-            # Post-mark cascade: immediately check if any number neighbor now has all mines found
+            cv2.imwrite(filename, pre_img)
+            logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
+            # 2. Wait 5 seconds for user to review the screenshot
+            logging.info("Waiting 5 seconds for user review...")
+            time.sleep(5)
+            # 3. Log reasoning
+            logging.info(self.solver.get_reasoning(action, coords, reason))
+            # 4. Right-click to place flag
+            self.controller.click_cell(r, c, right_click=True)
+            self.solver.mark_cell(r, c)
+            time.sleep(0.3)
+            # 5. Post-mark cascade
             self._cascade_flag_clicks()
         elif action == 'GUESS':
             logging.info(self.solver.get_reasoning(action, coords, reason))
@@ -268,14 +270,15 @@ class MinesweeperBot:
     def _handle_result(self):
         logging.info("State: RESULT. Game over. Looking for dialog...")
         
-        # Try to handle "游戏失败" dialog with keyboard shortcuts
+        # Game over dialog: press Alt+P to start a new game
         dialog_hwnd = find_window_by_title(["游戏失败", "Game Over"])
         if dialog_hwnd:
+            logging.info("Game over dialog found. Pressing Alt+P to start new game.")
             user32.SetForegroundWindow(dialog_hwnd)
             time.sleep(0.2)
-            pyautogui.press('p')  # P = new game
-            logging.info("Pressed P to start a new game.")
+            pyautogui.hotkey('alt', 'p')
             time.sleep(0.5)
+            logging.info("New game started via Alt+P. Continuing.")
             self.state = "FIRST_MOVE"
             return
         
