@@ -314,12 +314,36 @@ class Board:
                         scores[r, c] = min(1.0, current_var / 5000.0)
                     continue
 
-                # 3. Open cell — classify by color (robust to resize)
-                num = self._classify_cell_by_color(cell_img)
+                # 3. Open cell — try digit template matching first
+                num = self._classify_cell_by_digit_templates(cell_img)
+                if num is None:
+                    # Fallback: color-based blank / unknown
+                    num = self._classify_cell_by_color(cell_img)
                 matrix[r, c] = num
-                scores[r, c] = 0.0 if num == -2 else 1.0
+                scores[r, c] = 0.0 if num == -2 else 1.0 if num >= 0 else 0.5
 
         return matrix, scores
+
+    def _classify_cell_by_digit_templates(self, cell_img):
+        """Match inner region against cropped digit templates. Returns number or None."""
+        MARGIN = 2
+        if cell_img.shape[0] <= 2 * MARGIN or cell_img.shape[1] <= 2 * MARGIN:
+            return None
+        inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
+        best_num = None
+        best_score = 0.35
+        for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+            tmpl = self.matcher.templates.get(name.replace(".png", "_digit.png"))
+            if tmpl is None:
+                continue
+            if inner.shape[0] < tmpl.shape[0] or inner.shape[1] < tmpl.shape[1]:
+                continue
+            res = cv2.matchTemplate(inner, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, score, _, _ = cv2.minMaxLoc(res)
+            if score > best_score:
+                best_score = score
+                best_num = self.matcher.map_value(name)
+        return best_num
 
     @staticmethod
     def _classify_cell_by_color(cell_img):
