@@ -7,6 +7,18 @@ from ctypes import wintypes
 
 user32 = ctypes.windll.user32
 
+# Common Minesweeper window title keywords
+# Note: English keywords are case-sensitive to avoid matching folder names like "minesweeper-bot"
+MINESWEEPER_KEYWORDS = [
+    "扫雷",                    # Chinese
+    "扫雷游戏",                # Chinese variant
+    "Minesweeper",             # English (capitalized — won't match "minesweeper-bot")
+    "Microsoft Minesweeper",   # MS Store version
+]
+
+# Window classes that are definitely NOT Minesweeper
+EXCLUDED_CLASSES = {"CabinetWClass", "ExploreWClass", "Progman", "WorkerW", "ConsoleWindowClass"}
+
 def find_window_by_title(keywords):
     candidates = []
     def enum_callback(handle, _):
@@ -16,6 +28,11 @@ def find_window_by_title(keywords):
         title = buffer.value
         for kw in keywords:
             if kw in title:
+                # Skip non-game windows by class name
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(handle, cls_buf, 256)
+                if cls_buf.value in EXCLUDED_CLASSES:
+                    return True
                 if user32.IsWindowVisible(handle):
                     rect = wintypes.RECT()
                     user32.GetClientRect(handle, ctypes.byref(rect))
@@ -26,6 +43,17 @@ def find_window_by_title(keywords):
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     callback = enum_proc(enum_callback)
     user32.EnumWindows(callback, 0)
+    # Sort: prefer windows whose title starts with a keyword (main game window)
+    # over other matches (e.g. a dialog that happens to contain the word)
+    def score(h):
+        t = h[1]
+        for kw in keywords:
+            if t.startswith(kw) or t == kw:
+                return 2
+            if kw in t:
+                return 1
+        return 0
+    candidates.sort(key=lambda h: -score(h))
     return candidates[0][0] if candidates else None
 
 class Capture:
@@ -34,7 +62,7 @@ class Capture:
         self.window_offset_y = 0
 
     def get_window_client_rect(self):
-        hwnd = find_window_by_title(["扫雷", "Minesweeper", "minesweeper", "扫雷游戏"])
+        hwnd = find_window_by_title(MINESWEEPER_KEYWORDS)
         if not hwnd:
             return None
         rect = wintypes.RECT()

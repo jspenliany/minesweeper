@@ -5,7 +5,12 @@ the current implementation version can only run on a specific mine-sweeping wind
 
 ##start it by yourself#
 
-For anyone who want to run the code in win8 and above, please download the win7 package (https://win7games.com) Warning, please make sure the package is virus-free!!!
+1 For anyone who want to run the code in win8 and above, please download the win7 package (https://win7games.com) Warning, please make sure the package is virus-free!!!
+
+2 please replace board_tl.png & board_br.png with the blocks captured from the minesweeper window(top-left block and bottom-right block, no black border include)
+
+
+
 
 I use python to implement it and I look forward to someone trying the implementation version of other languages
 

@@ -3,7 +3,8 @@ import logging
 import pyautogui
 import cv2
 import ctypes
-from src.capture import Capture, find_window_by_title
+from ctypes import wintypes
+from src.capture import Capture, find_window_by_title, MINESWEEPER_KEYWORDS
 from src.matcher import Matcher
 from src.board import Board
 from src.solver import Solver, Reasoner
@@ -22,15 +23,32 @@ def get_foreground_window_title():
     return buffer.value
 
 def focus_minesweeper_window():
-    """Find and bring the Minesweeper window to the foreground"""
-    hwnd = find_window_by_title(["扫雷", "Minesweeper", "minesweeper", "扫雷游戏"])
-    if hwnd:
-        user32.SetForegroundWindow(hwnd)
-        time.sleep(0.2)
-        logging.info("Focused Minesweeper window via Win32 API.")
-        return True
-    logging.warning("Minesweeper window not found by title.")
-    return False
+    """Find, restore, and bring the Minesweeper window to the foreground.
+    Combines Win32 API calls with a title-bar click for reliability."""
+    hwnd = find_window_by_title(MINESWEEPER_KEYWORDS)
+    if not hwnd:
+        logging.warning("Minesweeper window not found by title.")
+        return False
+
+    # 1. Show/restore the window
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    time.sleep(0.05)
+
+    # 2. Standard activation APIs
+    user32.SetForegroundWindow(hwnd)
+    user32.BringWindowToTop(hwnd)
+    time.sleep(0.2)
+
+    # 3. Click on window title bar to force foreground activation
+    win_rect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(win_rect))
+    cx = win_rect.left + (win_rect.right - win_rect.left) // 2
+    cy = win_rect.top + 10  # title bar area
+    pyautogui.click(cx, cy)
+    time.sleep(0.3)
+
+    logging.info("Focused Minesweeper window.")
+    return True
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,11 +111,13 @@ class MinesweeperBot:
 
     def _handle_idle(self):
         logging.info("State: IDLE. Searching for game window...")
-        screen = self.capture.get_screenshot()
-        if self.matcher.find_image(screen, "board_tl.png"):
-            logging.info("Game window detected!")
+        # Use window title enumeration (not template matching) to detect Minesweeper
+        hwnd = find_window_by_title(MINESWEEPER_KEYWORDS)
+        if hwnd:
+            focus_minesweeper_window()
+            logging.info("Game window found and focused!")
             self.state = "START_GAME"
-            time.sleep(3)  # Pause before F2 to avoid rapid loop
+            time.sleep(1)
         else:
             logging.info("Game not found. Still waiting...")
 
@@ -189,16 +209,9 @@ class MinesweeperBot:
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
 
         # Compute per-cell closed_tile baseline from the fresh all-closed board
-        board_info = {
-            'origin_x': calib['origin_x'],
-            'origin_y': calib['origin_y'],
-            'cell_w': calib['cell_w'],
-            'cell_h': calib['cell_h'],
-            'rows': self.rows,
-            'cols': self.cols,
-            'win_ox': calib.get('win_ox'),
-            'win_oy': calib.get('win_oy'),
-        }
+        board_info = calib.copy()
+        board_info['rows'] = self.rows
+        board_info['cols'] = self.cols
         self.closed_baseline = self.board.compute_closed_baseline(board_info)
         logging.info(f"Closed baseline range: {self.closed_baseline.min():.2f} ~ {self.closed_baseline.max():.2f}")
 
@@ -224,10 +237,6 @@ class MinesweeperBot:
         """Check foreground window title and handle any dialogs. Returns True if a dialog was handled."""
         title = get_foreground_window_title()
         if not title:
-            return False
-        
-        # If the main game window is active, nothing to handle
-        if any(kw in title for kw in ["扫雷", "Minesweeper", "minesweeper"]):
             return False
         
         # Game over dialog
@@ -260,6 +269,10 @@ class MinesweeperBot:
             time.sleep(0.5)
             return True
         
+        # If the main game window is active and no dialog keywords matched, nothing to handle
+        if any(kw in title for kw in MINESWEEPER_KEYWORDS):
+            return False
+        
         return False
 
     def _handle_playing(self):
@@ -268,17 +281,10 @@ class MinesweeperBot:
             return
         
         logging.info("State: PLAYING. Analyzing board...")
-        board_info = {
-            'origin_x': self.controller.origin_x,
-            'origin_y': self.controller.origin_y,
-            'cell_w': self.controller.cell_w,
-            'cell_h': self.controller.cell_h,
-            'rows': self.rows,
-            'cols': self.cols,
-            'win_ox': self.calib.get('win_ox') if self.calib else None,
-            'win_oy': self.calib.get('win_oy') if self.calib else None,
-            'closed_baseline': self.closed_baseline,
-        }
+        board_info = self.calib.copy() if self.calib else {}
+        board_info['rows'] = self.rows
+        board_info['cols'] = self.cols
+        board_info['closed_baseline'] = self.closed_baseline
         matrix, scores = self.board.analyze_board(board_info)
         
         logging.info("--- Current Logical Board ---")
@@ -339,29 +345,31 @@ class MinesweeperBot:
             if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
-        if self.matcher.find_image(screen, "game_over_fragment.png") or self.matcher.find_image(screen, "win_fragment.png"):
-            logging.info("Game end detected!")
+        if self.matcher.find_image(screen, "game_over_fragment.png"):
+            logging.info("Game end detected via game_over_fragment!")
             self.state = "RESULT"
 
     def _cascade_flag_clicks(self, max_iter=100):
         """After marking a flag, immediately cascade: if a number cell's flags match its value, click all safe neighbors"""
+        last_action = None  # (action_type, r, c) to detect repeats
         for _ in range(max_iter):
             if self._handle_dialogs():
                 return
-            board_info = {
-                'origin_x': self.controller.origin_x,
-                'origin_y': self.controller.origin_y,
-                'cell_w': self.controller.cell_w,
-                'cell_h': self.controller.cell_h,
-                'rows': self.rows,
-                'cols': self.cols,
-                'win_ox': self.calib.get('win_ox') if self.calib else None,
-                'win_oy': self.calib.get('win_oy') if self.calib else None,
-                'closed_baseline': self.closed_baseline,
-            }
+            board_info = self.calib.copy() if self.calib else {}
+            board_info['rows'] = self.rows
+            board_info['cols'] = self.cols
+            board_info['closed_baseline'] = self.closed_baseline
             matrix, _ = self.board.analyze_board(board_info)
             self.solver.update_grid(matrix)
             action, coords, reason = self.solver.solve()
+
+            # Break if solver returns same cell as last iteration (board state unchanged)
+            current = (action, coords[0], coords[1]) if coords else None
+            if current and current == last_action:
+                logging.info(f"[Cascade] Same action {current} repeated; board state unchanged. Stopping cascade.")
+                break
+            last_action = current
+
             if action == 'CLICK':
                 logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                 self._focus_game_window()
@@ -394,9 +402,14 @@ class MinesweeperBot:
     def _handle_result(self):
         logging.info("State: RESULT. Looking for dialogs...")
         
-        # Try dialog handling first
-        if self._handle_dialogs():
-            return
+        # Ensure game window is foreground so dialog titles are visible
+        self._focus_game_window()
+        
+        # Retry dialog detection for ~10s (dialog may appear with delay)
+        for attempt in range(10):
+            if self._handle_dialogs():
+                return
+            time.sleep(1)
         
         # Fallback: try to find restart button in screenshot
         screen = self.capture.get_screenshot()
@@ -412,8 +425,16 @@ class MinesweeperBot:
             time.sleep(0.5)
             self.state = "FIRST_MOVE"
         else:
-            logging.warning("No dialog or restart button found. Returning to IDLE.")
-            self.state = "IDLE"
+            # Last resort: focus window and press Alt+P (works for most Minesweeper versions)
+            self._focus_game_window()
+            pyautogui.hotkey('alt', 'p')
+            time.sleep(1)
+            if "新游戏" in get_foreground_window_title():
+                pyautogui.hotkey('alt', 'n')
+                time.sleep(0.5)
+                logging.info("Pressed Alt+N to confirm new game dialog after Alt+P.")
+            logging.info("Pressed Alt+P as fallback restart. Proceeding to FIRST_MOVE.")
+            self.state = "FIRST_MOVE"
 
 if __name__ == "__main__":
     bot = MinesweeperBot()

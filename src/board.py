@@ -9,165 +9,165 @@ class Board:
         self.expected_cols = expected_cols
         self.marked_cells = set()
 
-    @staticmethod
-    def _nms(matches, min_dist):
-        results = []
-        for m in matches:
-            mx, my = m
-            keep = True
-            for r in results:
-                if abs(mx - r[0]) < min_dist and abs(my - r[1]) < min_dist:
-                    keep = False
-                    break
-            if keep:
-                results.append(m)
-        return results
+    def _find_board_contour(self, screen, debug_img):
+        """Edge detection → find the board rectangle. Returns (bx, by, bw, bh) or None."""
+        gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        known_rows = {9: 9, 16: 16, 30: 16}
+        expected_rows = known_rows.get(self.expected_cols, 16)
+        expected_aspect = self.expected_cols / expected_rows
+
+        best_rect = None
+        best_score = 0
+        for method in range(3):
+            if method == 0:
+                edges = cv2.Canny(blurred, 30, 100)
+            elif method == 1:
+                edges = cv2.Canny(blurred, 10, 50)
+            else:
+                edges = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                              cv2.THRESH_BINARY, 11, 2)
+
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                if len(approx) != 4:
+                    continue
+                rx, ry, rw, rh = cv2.boundingRect(approx)
+                if rw < 100 or rh < 100:
+                    continue
+                aspect = rw / rh
+                aspect_score = max(0, 1.0 - abs(aspect - expected_aspect) / expected_aspect)
+                area_score = (rw * rh) / (screen.shape[1] * screen.shape[0])
+                score = aspect_score * 0.5 + area_score * 0.5
+                if score > best_score:
+                    best_score = score
+                    best_rect = (rx, ry, rw, rh)
+
+        return best_rect
 
     def find_board(self):
         screen = self.capture.get_screenshot()
         debug_img = screen.copy()
+        h_screen, w_screen = screen.shape[:2]
 
-        # 1. Load anchor templates (freshly captured, match current cell size)
-        tl_tmpl = self.matcher.templates.get("board_tl.png")
-        br_tmpl = self.matcher.templates.get("board_br.png")
-        if tl_tmpl is None or br_tmpl is None:
-            logging.error("Anchor templates board_tl.png / board_br.png not loaded")
-            cv2.imwrite("debug_no_anchor_templates.png", debug_img)
+        # 1. Edge detection → board rectangle
+        board_rect = self._find_board_contour(screen, debug_img)
+        if board_rect is None:
+            # Fallback: color-based — Minesweeper board is light gray
+            hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+            lower = np.array([0, 0, 180])
+            upper = np.array([180, 30, 255])
+            mask = cv2.inRange(hsv, lower, upper)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((10, 10), np.uint8))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            known_rows = {9: 9, 16: 16, 30: 16}
+            expected_rows = known_rows.get(self.expected_cols, 16)
+            expected_aspect = self.expected_cols / expected_rows
+            best_rect = None
+            best_score = 0
+            for cnt in cnts:
+                rx, ry, rw, rh = cv2.boundingRect(cnt)
+                if rw < 100 or rh < 100:
+                    continue
+                aspect = rw / rh
+                aspect_score = max(0, 1.0 - abs(aspect - expected_aspect) / expected_aspect)
+                area_score = (rw * rh) / (w_screen * h_screen)
+                score = aspect_score * 0.5 + area_score * 0.5
+                if score > best_score:
+                    best_score = score
+                    best_rect = (rx, ry, rw, rh)
+            if best_rect and best_score > 0.3:
+                board_rect = best_rect
+                logging.info(f"Found board via color mask: ({rx},{ry},{rw},{rh})")
+
+        if board_rect is None:
+            logging.warning("All detection methods failed; using full screenshot as board rect")
+            board_rect = (0, 0, w_screen, h_screen)
+
+        bx, by, bw, bh = board_rect
+        cv2.rectangle(debug_img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+        cv2.putText(debug_img, "BOARD RECT", (bx, by - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        known_rows = {9: 9, 16: 16, 30: 16}
+        expected_rows = known_rows.get(self.expected_cols, 16)
+
+        # 2. Estimate step geometrically: board rect includes ~0.5 cell border on each side
+        step_w = bw / (self.expected_cols + 0.5)
+        step_h = bh / (expected_rows + 0.5)
+        step = min(step_w, step_h)
+
+        # 3. Center grid in board rect; verify all cells fit, shrink if needed
+        for _ in range(5):
+            margin_x = (bw - step * (self.expected_cols - 1)) / 2
+            margin_y = (bh - step * (expected_rows - 1)) / 2
+            cx0 = bx + margin_x
+            cy0 = by + margin_y
+            last_center_x = cx0 + step * (self.expected_cols - 1)
+            last_center_y = cy0 + step * (expected_rows - 1)
+            vis_half = max(step * 0.45, 5)
+            if (last_center_x + vis_half <= w_screen and
+                last_center_y + vis_half <= h_screen and
+                cx0 - vis_half >= bx and cy0 - vis_half >= by):
+                break
+            step *= 0.97
+        else:
+            logging.error(f"Grid does not fit after 5 iterations (step={step:.1f})")
             return None
 
-        tmpl_h, tmpl_w = tl_tmpl.shape[:2]
+        rows = expected_rows
+        cols = self.expected_cols
+        cx1 = last_center_x
+        cy1 = last_center_y
 
-        # 2. Match both templates, take per-pixel max
-        score_tl = cv2.matchTemplate(screen, tl_tmpl, cv2.TM_CCOEFF_NORMED)
-        score_br = cv2.matchTemplate(screen, br_tmpl, cv2.TM_CCOEFF_NORMED)
-        combined = np.maximum(score_tl, score_br)
+        visual_cell_w = max(8, int(round(step * 0.9)))
+        visual_cell_h = max(8, int(round(step * 0.9)))
 
-        # 3. Find local maxima in combined score map
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        dilated = cv2.dilate(combined, kernel)
+        logging.info(f"Board rect=({bx},{by},{bw},{bh}) → {cols}x{rows} grid, step={step:.1f}, "
+                     f"cell_visual={visual_cell_w}x{visual_cell_h}")
 
-        threshold = 0.70
-        peaks = (combined >= threshold) & (combined == dilated)
-        y_peaks, x_peaks = np.where(peaks)
-        raw_peaks = list(zip(x_peaks, y_peaks))
-
-        if len(raw_peaks) < 10:
-            threshold = 0.60
-            peaks = (combined >= threshold) & (combined == dilated)
-            y_peaks, x_peaks = np.where(peaks)
-            raw_peaks = list(zip(x_peaks, y_peaks))
-
-        if len(raw_peaks) < 10:
-            logging.error(f"Only {len(raw_peaks)} cell peaks found (threshold={threshold})")
-            cv2.imwrite("debug_scoremap.png", (combined * 255).astype(np.uint8))
-            cv2.imwrite("debug_few_peaks.png", debug_img)
-            return None
-
-        # 4. NMS to deduplicate nearby peaks from the same cell
-        filtered = self._nms(raw_peaks, max(tmpl_w, tmpl_h) * 0.4)
-
-        # Convert template top-left → cell center
-        centers = [(x + tmpl_w // 2, y + tmpl_h // 2) for x, y in filtered]
-
-        # 5. Grid fitting
-        centers_by_y = sorted(centers, key=lambda p: p[1])
-
-        # Estimate vertical step from median Y-difference
-        y_diffs = []
-        for i in range(1, len(centers_by_y)):
-            d = centers_by_y[i][1] - centers_by_y[i-1][1]
-            if d > 5:
-                y_diffs.append(d)
-        step_y_est = float(np.median(y_diffs)) if y_diffs else tmpl_h
-
-        # Group into rows
-        y_tol = step_y_est * 0.45
-        rows_list = []
-        cur = [centers_by_y[0]]
-        for pt in centers_by_y[1:]:
-            if abs(pt[1] - cur[0][1]) <= y_tol:
-                cur.append(pt)
-            else:
-                rows_list.append(sorted(cur, key=lambda p: p[0]))
-                cur = [pt]
-        rows_list.append(sorted(cur, key=lambda p: p[0]))
-
-        # Keep rows that have close to expected column count
-        valid_rows = [r for r in rows_list if len(r) >= self.expected_cols * 0.6]
-        if len(valid_rows) < 2:
-            logging.error(f"Could not form valid grid: {len(valid_rows)} valid rows out of {len(rows_list)}")
-            cv2.imwrite("debug_scoremap.png", (combined * 255).astype(np.uint8))
-            cv2.imwrite("debug_no_grid.png", debug_img)
-            return None
-
-        # Compute step from each valid row's X-span
-        row_steps = []
-        for r in valid_rows:
-            row_steps.append((r[-1][0] - r[0][0]) / (self.expected_cols - 1))
-        step = float(np.median(row_steps)) if row_steps else step_y_est
-
-        # Origin and last-cell from first/last valid row
-        cx0, cy0 = valid_rows[0][0]
-        cx1, cy1 = valid_rows[-1][-1]
-
-        rows = int(round((cy1 - cy0) / step)) + 1
-        if rows < 2 or rows > self.expected_cols:
-            logging.error(f"Implausible rows: {rows}")
-            cv2.imwrite("debug_bad_rows.png", debug_img)
-            return None
-
-        # 6. Draw debug
-        for r in valid_rows:
-            cv2.circle(debug_img, r[0], 3, (0, 255, 0), -1)
-            cv2.circle(debug_img, r[-1], 3, (0, 255, 0), -1)
-        cv2.circle(debug_img, (cx0, cy0), 5, (0, 0, 255), -1)
-        cv2.circle(debug_img, (cx1, cy1), 5, (0, 0, 255), -1)
+        # 4. Draw debug
+        cv2.circle(debug_img, (int(cx0), int(cy0)), 5, (0, 0, 255), -1)
+        cv2.circle(debug_img, (int(cx1), int(cy1)), 5, (0, 0, 255), -1)
         cv2.rectangle(debug_img,
                       (int(cx0 - step / 2), int(cy0 - step / 2)),
                       (int(cx1 + step / 2), int(cy1 + step / 2)),
                       (255, 0, 255), 1)
         cv2.imwrite("debug_calibration.png", debug_img)
-        cv2.imwrite("debug_scoremap.png", (combined * 255).astype(np.uint8))
 
-        logging.info(f"Found {len(centers)} cells → {self.expected_cols}x{rows} grid, step={step:.1f}, "
-                     f"anchor={tmpl_w}x{tmpl_h}")
+        # 5. Resize all tile templates
+        self.matcher.resize_tile_templates(visual_cell_w, visual_cell_h)
 
-        # 7. Resize all tile templates to match anchor dimensions
-        self.matcher.resize_tile_templates(tmpl_w, tmpl_h)
-
-        origin_x, origin_y = self.capture.to_screen(cx0, cy0)
+        origin_x, origin_y = self.capture.to_screen(int(cx0), int(cy0))
         return {
             "origin_x": origin_x,
             "origin_y": origin_y,
             "cell_w": step,
             "cell_h": step,
-            "visual_cell_w": tmpl_w,
-            "visual_cell_h": tmpl_h,
-            "win_ox": cx0,
-            "win_oy": cy0,
+            "visual_cell_w": visual_cell_w,
+            "visual_cell_h": visual_cell_h,
+            "win_ox": int(cx0),
+            "win_oy": int(cy0),
             "window_offset_x": self.capture.window_offset_x,
             "window_offset_y": self.capture.window_offset_y,
             "rows": rows,
-            "cols": self.expected_cols,
+            "cols": cols,
         }
 
     def compute_closed_baseline(self, board_info):
-        """Compute reference closed_tile match score for every cell on a fresh all-closed board.
-        Returns a (rows x cols) float32 matrix. Each entry is the baseline threshold
-        for that cell — used to account for board-wide color gradient.
-        """
+        """Compute per-cell grayscale variance as a 'closed tile' baseline.
+           Closed tiles have high variance (3D bevel: bright highlight + dark shadow)."""
         screen = self.capture.get_screenshot()
         rows = board_info.get('rows', 9)
         cols = board_info.get('cols', 9)
+        crop_w = int(round(board_info.get('visual_cell_w', 32)))
+        crop_h = int(round(board_info.get('visual_cell_h', 32)))
 
-        closed_tmpl = self.matcher.templates.get("closed_tile.png")
-        crop_w = int(round(board_info.get('visual_cell_w',
-                    closed_tmpl.shape[1] if closed_tmpl is not None else board_info.get('cell_w', 31))))
-        crop_h = int(round(board_info.get('visual_cell_h',
-                    closed_tmpl.shape[0] if closed_tmpl is not None else board_info.get('cell_h', 31))))
-
-        ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
-        oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
+        ox = board_info['origin_x'] - board_info['window_offset_x']
+        oy = board_info['origin_y'] - board_info['window_offset_y']
 
         baseline = np.zeros((rows, cols), dtype=np.float32)
         for r in range(rows):
@@ -177,10 +177,11 @@ class Board:
                 if (x < 0 or y < 0 or
                     x + crop_w > screen.shape[1] or
                     y + crop_h > screen.shape[0]):
-                    baseline[r, c] = 0.70  # safe fallback
+                    baseline[r, c] = 500.0
                     continue
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
-                baseline[r, c] = self.matcher.match_cell(cell_img, "closed_tile.png")
+                gray = cv2.cvtColor(cell_img, cv2.COLOR_BGR2GRAY)
+                baseline[r, c] = float(gray.var())
         return baseline
 
     def analyze_board(self, board_info):
@@ -197,24 +198,12 @@ class Board:
         matrix = np.full((rows, cols), -1, dtype=int)
         scores = np.full((rows, cols), 0.0, dtype=float)
 
-        ox = board_info.get('win_ox', board_info['origin_x'] - board_info.get('window_offset_x', 0))
-        oy = board_info.get('win_oy', board_info['origin_y'] - board_info.get('window_offset_y', 0))
+        # Use stored calibration offset to recover cx0 (client-area coordinate),
+        # which is invariant under window movement (screenshot is always client area).
+        ox = board_info['origin_x'] - board_info['window_offset_x']
+        oy = board_info['origin_y'] - board_info['window_offset_y']
 
         closed_baseline = board_info.get('closed_baseline')
-        tile_th = 0.70
-        open_th = 0.35
-        MARGIN = 1  # remove 1px dark border from open cells before matching content templates
-
-        def match_with_margin(cell_img, template, margin):
-            """Match cell_img against template, both cropped to interior region."""
-            if margin > 0 and template.shape[0] > 2*margin and template.shape[1] > 2*margin:
-                inner = cell_img[margin:-margin, margin:-margin]
-                tmpl_inner = template[margin:-margin, margin:-margin]
-                res = cv2.matchTemplate(inner, tmpl_inner, cv2.TM_CCOEFF_NORMED)
-            else:
-                res = cv2.matchTemplate(cell_img, template, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, _ = cv2.minMaxLoc(res)
-            return max_val
 
         for r in range(rows):
             for c in range(cols):
@@ -232,67 +221,72 @@ class Board:
 
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
 
-                # Pick the best match among all content templates (open_blank, numbers, flag/mine)
-                best_val = None
-                best_score = -1.0
-
-                # 1a. Open blank
-                tmpl = self.matcher.templates.get("open_blank.png")
-                if tmpl is not None:
-                    open_score = match_with_margin(cell_img, tmpl, MARGIN)
-                else:
-                    open_score = 0.0
-                logging.debug(f"open_blank.png: {open_score}")
-                if open_score > open_th and open_score > best_score:
-                    best_score = open_score
-                    best_val = -2
-
-                # 1b. Number templates (digit-only, no background)
-                inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
-                for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
-                    tmpl = self.matcher.templates.get(name.replace(".png", "_digit.png"))
-                    if tmpl is None:
-                        continue
-                    if inner.shape[0] < tmpl.shape[0] or inner.shape[1] < tmpl.shape[1]:
-                        continue
-                    res = cv2.matchTemplate(inner, tmpl, cv2.TM_CCOEFF_NORMED)
-                    _, score, _, _ = cv2.minMaxLoc(res)
-                    if score > tile_th and score > best_score:
-                        best_score = score
-                        best_val = self.matcher.map_value(name)
-
-                # 1c. Mine/flag templates
-                for name, template in self.matcher.templates.items():
-                    if name not in ('mine.png', 'flag.png'):
-                        continue
-                    if cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:
-                        continue
-                    score = match_with_margin(cell_img, template, MARGIN)
-                    if score > 0.50 and score > best_score:
-                        best_score = score
-                        best_val = self.matcher.map_value(name)
-
-                if best_val is not None:
-                    matrix[r, c] = best_val
-                    scores[r, c] = best_score
-                    continue
-
-                # 3. Closed-tile check with adaptive threshold
-                closed_score = match_with_margin(cell_img, self.matcher.templates.get("closed_tile.png"), 0)
-                logging.debug(f"closed_tile.png: {closed_score}")
+                # 1. Closed-tile check via variance (robust to resize, no templates needed)
+                gray = cv2.cvtColor(cell_img, cv2.COLOR_BGR2GRAY)
+                current_var = float(gray.var())
                 if closed_baseline is not None:
                     ref = closed_baseline[r, c]
-                    closed_th = max(ref * 0.65, ref - 0.20)
+                    # Closed if current variance within 35% of baseline
+                    closed = (abs(current_var - ref) / max(ref, 1.0)) < 0.35
                 else:
-                    closed_th = 0.70
-                if closed_score > closed_th:
+                    # Fallback: closed tiles typically have var > 200 at this zoom
+                    closed = current_var > 200
+                if closed:
                     matrix[r, c] = -1
-                else:
-                    matrix[r, c] = -3
-                scores[r, c] = closed_score
+                    if closed_baseline is not None:
+                        err = abs(current_var - ref) / max(ref, 1.0)
+                        scores[r, c] = 1.0 - min(1.0, err)
+                    else:
+                        scores[r, c] = min(1.0, current_var / 5000.0)
+                    continue
+
+                # 3. Open cell — classify by color (robust to resize)
+                num = self._classify_cell_by_color(cell_img)
+                matrix[r, c] = num
+                scores[r, c] = 0.0 if num == -2 else 1.0
 
         return matrix, scores
 
+    @staticmethod
+    def _classify_cell_by_color(cell_img):
+        """Classify an open cell by the dominant color in its center region.
+        Returns: -2 (blank), 1-8 (number), -3 (unrecognized)."""
+        h, w = cell_img.shape[:2]
+        y1, y2 = h // 4, 3 * h // 4
+        x1, x2 = w // 4, 3 * w // 4
+        if y2 <= y1 or x2 <= x1:
+            return -3
+        center = cell_img[y1:y2, x1:x2]
+        avg = center.mean(axis=(0, 1))
+        b, g, r = float(avg[0]), float(avg[1]), float(avg[2])
+
+        # Blank (uniform light gray)
+        if b > 200 and g > 200 and r > 200:
+            return -2
+
+        # Known digit BGR centroids
+        colors = {
+            1: (255, 0, 0),
+            2: (0, 128, 0),
+            3: (0, 0, 255),
+            4: (128, 0, 0),
+            5: (0, 0, 128),
+            6: (0, 128, 128),
+            7: (0, 0, 0),
+            8: (128, 128, 128),
+        }
+
+        best_num = -3
+        best_dist = float('inf')
+        for num, (cb, cg, cr) in colors.items():
+            dist = (b - cb) ** 2 + (g - cg) ** 2 + (r - cr) ** 2
+            if dist < best_dist:
+                best_dist = dist
+                best_num = num
+
+        if best_dist > 6000:
+            return -3
+        return best_num
+
     def mark_cell(self, r, c):
         self.marked_cells.add((r, c))
-
