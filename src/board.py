@@ -48,88 +48,160 @@ class Board:
 
         return best_rect
 
+    def _find_board_by_anchors(self, screen):
+        """Use board_tl.png / board_br.png template matching to locate the grid.
+        Returns (tl_x, tl_y, br_x, br_y, cell_w, cell_h, cols, rows, step) or None."""
+        tl_tmpl = self.matcher.templates.get("board_tl.png")
+        br_tmpl = self.matcher.templates.get("board_br.png")
+        if tl_tmpl is None or br_tmpl is None:
+            return None
+
+        cell_w = tl_tmpl.shape[1]
+        cell_h = tl_tmpl.shape[0]
+
+        tl_matches = self.matcher.match_all(screen, "board_tl.png", threshold=0.7)
+        br_matches = self.matcher.match_all(screen, "board_br.png", threshold=0.7)
+        if not tl_matches or not br_matches:
+            return None
+
+        # TL corner: top-left-most match (smallest x+y)
+        tl_matches.sort(key=lambda p: p[0] + p[1])
+        tl_x, tl_y = tl_matches[0]
+
+        # BR corner: bottom-right-most match (largest x+y)
+        br_matches.sort(key=lambda p: -(p[0] + p[1]))
+        br_x, br_y = br_matches[0]
+
+        if br_x <= tl_x or br_y <= tl_y:
+            return None
+
+        dx = br_x - tl_x
+        dy = br_y - tl_y
+
+        # Detect grid size by trying common configurations
+        best_info = None
+        best_err = 1.0
+        for n_cols, n_rows in [(30, 16), (16, 16), (9, 9)]:
+            if n_cols < 2 or n_rows < 2:
+                continue
+            sx = dx / (n_cols - 1)
+            sy = dy / (n_rows - 1)
+            if max(sx, sy) == 0:
+                continue
+            ratio = min(sx, sy) / max(sx, sy)
+            if ratio > 0.80:
+                err = 1.0 - ratio
+                if err < best_err:
+                    best_err = err
+                    step = (sx + sy) / 2.0
+                    best_info = (tl_x, tl_y, br_x, br_y, cell_w, cell_h, n_cols, n_rows, step)
+
+        if best_info is None:
+            return None
+
+        logging.info(f"Found board via anchor matching: TL=({tl_x},{tl_y}) BR=({br_x},{br_y}) "
+                     f"{best_info[6]}x{best_info[7]} grid, step={best_info[8]:.1f}, cell={cell_w}x{cell_h}")
+        return best_info
+
     def find_board(self):
         screen = self.capture.get_screenshot()
         debug_img = screen.copy()
         h_screen, w_screen = screen.shape[:2]
 
-        # 1. Edge detection → board rectangle
-        board_rect = self._find_board_contour(screen, debug_img)
-        if board_rect is None:
-            # Fallback: color-based — Minesweeper board is light gray
-            hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
-            lower = np.array([0, 0, 180])
-            upper = np.array([180, 30, 255])
-            mask = cv2.inRange(hsv, lower, upper)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((10, 10), np.uint8))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 1. Anchor template matching (primary)
+        anchor_info = self._find_board_by_anchors(screen)
+
+        if anchor_info is not None:
+            tl_x, tl_y, br_x, br_y, cell_w, cell_h, cols, rows, step = anchor_info
+
+            visual_cell_w = cell_w
+            visual_cell_h = cell_h
+            cx0 = tl_x + cell_w / 2.0
+            cy0 = tl_y + cell_h / 2.0
+            cx1 = br_x + cell_w / 2.0
+            cy1 = br_y + cell_h / 2.0
+
+            board_rect_label = f"anchors TL=({tl_x},{tl_y}) BR=({br_x},{br_y})"
+        else:
+            # 2. Fallback: edge detection → board rectangle
+            board_rect = self._find_board_contour(screen, debug_img)
+            if board_rect is None:
+                # Fallback: color-based — Minesweeper board is light gray
+                hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+                lower = np.array([0, 0, 180])
+                upper = np.array([180, 30, 255])
+                mask = cv2.inRange(hsv, lower, upper)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((10, 10), np.uint8))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+                cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                known_rows = {9: 9, 16: 16, 30: 16}
+                expected_rows = known_rows.get(self.expected_cols, 16)
+                expected_aspect = self.expected_cols / expected_rows
+                best_rect = None
+                best_score = 0
+                for cnt in cnts:
+                    rx, ry, rw, rh = cv2.boundingRect(cnt)
+                    if rw < 100 or rh < 100:
+                        continue
+                    aspect = rw / rh
+                    aspect_score = max(0, 1.0 - abs(aspect - expected_aspect) / expected_aspect)
+                    area_score = (rw * rh) / (w_screen * h_screen)
+                    score = aspect_score * 0.5 + area_score * 0.5
+                    if score > best_score:
+                        best_score = score
+                        best_rect = (rx, ry, rw, rh)
+                if best_rect and best_score > 0.3:
+                    board_rect = best_rect
+                    logging.info(f"Found board via color mask: ({rx},{ry},{rw},{rh})")
+
+            if board_rect is None:
+                logging.warning("All detection methods failed; using full screenshot as board rect")
+                board_rect = (0, 0, w_screen, h_screen)
+
+            bx, by, bw, bh = board_rect
+            board_rect_label = f"({bx},{by},{bw},{bh})"
+
             known_rows = {9: 9, 16: 16, 30: 16}
             expected_rows = known_rows.get(self.expected_cols, 16)
-            expected_aspect = self.expected_cols / expected_rows
-            best_rect = None
-            best_score = 0
-            for cnt in cnts:
-                rx, ry, rw, rh = cv2.boundingRect(cnt)
-                if rw < 100 or rh < 100:
-                    continue
-                aspect = rw / rh
-                aspect_score = max(0, 1.0 - abs(aspect - expected_aspect) / expected_aspect)
-                area_score = (rw * rh) / (w_screen * h_screen)
-                score = aspect_score * 0.5 + area_score * 0.5
-                if score > best_score:
-                    best_score = score
-                    best_rect = (rx, ry, rw, rh)
-            if best_rect and best_score > 0.3:
-                board_rect = best_rect
-                logging.info(f"Found board via color mask: ({rx},{ry},{rw},{rh})")
 
-        if board_rect is None:
-            logging.warning("All detection methods failed; using full screenshot as board rect")
-            board_rect = (0, 0, w_screen, h_screen)
+            # Estimate step geometrically
+            step_w = bw / (self.expected_cols + 0.5)
+            step_h = bh / (expected_rows + 0.5)
+            step = min(step_w, step_h)
 
-        bx, by, bw, bh = board_rect
-        cv2.rectangle(debug_img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-        cv2.putText(debug_img, "BOARD RECT", (bx, by - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            for _ in range(5):
+                margin_x = (bw - step * (self.expected_cols - 1)) / 2
+                margin_y = (bh - step * (expected_rows - 1)) / 2
+                cx0 = bx + margin_x
+                cy0 = by + margin_y
+                cx1 = cx0 + step * (self.expected_cols - 1)
+                cy1 = cy0 + step * (expected_rows - 1)
+                vis_half = max(step * 0.45, 5)
+                if (cx1 + vis_half <= w_screen and
+                    cy1 + vis_half <= h_screen and
+                    cx0 - vis_half >= bx and cy0 - vis_half >= by):
+                    break
+                step *= 0.97
+            else:
+                logging.error(f"Grid does not fit after 5 iterations (step={step:.1f})")
+                return None
 
-        known_rows = {9: 9, 16: 16, 30: 16}
-        expected_rows = known_rows.get(self.expected_cols, 16)
+            rows = expected_rows
+            cols = self.expected_cols
 
-        # 2. Estimate step geometrically: board rect includes ~0.5 cell border on each side
-        step_w = bw / (self.expected_cols + 0.5)
-        step_h = bh / (expected_rows + 0.5)
-        step = min(step_w, step_h)
+            # Use anchor template dimensions for cell_visual if available
+            tl_tmpl = self.matcher.templates.get("board_tl.png")
+            if tl_tmpl is not None:
+                visual_cell_w = tl_tmpl.shape[1]
+                visual_cell_h = tl_tmpl.shape[0]
+            else:
+                visual_cell_w = max(8, int(round(step * 0.9)))
+                visual_cell_h = max(8, int(round(step * 0.9)))
 
-        # 3. Center grid in board rect; verify all cells fit, shrink if needed
-        for _ in range(5):
-            margin_x = (bw - step * (self.expected_cols - 1)) / 2
-            margin_y = (bh - step * (expected_rows - 1)) / 2
-            cx0 = bx + margin_x
-            cy0 = by + margin_y
-            last_center_x = cx0 + step * (self.expected_cols - 1)
-            last_center_y = cy0 + step * (expected_rows - 1)
-            vis_half = max(step * 0.45, 5)
-            if (last_center_x + vis_half <= w_screen and
-                last_center_y + vis_half <= h_screen and
-                cx0 - vis_half >= bx and cy0 - vis_half >= by):
-                break
-            step *= 0.97
-        else:
-            logging.error(f"Grid does not fit after 5 iterations (step={step:.1f})")
-            return None
-
-        rows = expected_rows
-        cols = self.expected_cols
-        cx1 = last_center_x
-        cy1 = last_center_y
-
-        visual_cell_w = max(8, int(round(step * 0.9)))
-        visual_cell_h = max(8, int(round(step * 0.9)))
-
-        logging.info(f"Board rect=({bx},{by},{bw},{bh}) → {cols}x{rows} grid, step={step:.1f}, "
-                     f"cell_visual={visual_cell_w}x{visual_cell_h}")
-
-        # 4. Draw debug
+        cv2.rectangle(debug_img, (int(cx0 - step / 2), int(cy0 - step / 2)),
+                      (int(cx1 + step / 2), int(cy1 + step / 2)), (0, 255, 0), 2)
+        cv2.putText(debug_img, f"BOARD {board_rect_label}", (int(cx0), int(cy0) - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         cv2.circle(debug_img, (int(cx0), int(cy0)), 5, (0, 0, 255), -1)
         cv2.circle(debug_img, (int(cx1), int(cy1)), 5, (0, 0, 255), -1)
         cv2.rectangle(debug_img,
@@ -138,7 +210,9 @@ class Board:
                       (255, 0, 255), 1)
         cv2.imwrite("debug_calibration.png", debug_img)
 
-        # 5. Resize all tile templates
+        logging.info(f"Board {board_rect_label} → {cols}x{rows} grid, step={step:.1f}, "
+                     f"cell_visual={visual_cell_w}x{visual_cell_h}")
+
         self.matcher.resize_tile_templates(visual_cell_w, visual_cell_h)
 
         origin_x, origin_y = self.capture.to_screen(int(cx0), int(cy0))
