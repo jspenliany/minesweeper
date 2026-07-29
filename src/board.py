@@ -295,16 +295,18 @@ class Board:
 
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
 
-                # 1. Closed-tile check via variance (robust to resize, no templates needed)
+                # 1. Flag detection (closed tile with a red flag icon)
+                # Rule: closed tiles have high variance; a red flag in the center
+                #       (high R, low G/B) distinguishes flag from red digit 3 on an open tile.
                 gray = cv2.cvtColor(cell_img, cv2.COLOR_BGR2GRAY)
                 current_var = float(gray.var())
+                closed = False
                 if closed_baseline is not None:
                     ref = closed_baseline[r, c]
-                    # Closed if current variance within 35% of baseline
                     closed = (abs(current_var - ref) / max(ref, 1.0)) < 0.35
                 else:
-                    # Fallback: closed tiles typically have var > 200 at this zoom
                     closed = current_var > 200
+
                 if closed:
                     matrix[r, c] = -1
                     if closed_baseline is not None:
@@ -325,13 +327,15 @@ class Board:
         return matrix, scores
 
     def _classify_cell_by_digit_templates(self, cell_img):
-        """Match inner region against cropped digit templates. Returns number or None."""
-        MARGIN = 2
+        """Match inner region (MARGIN=1) against cropped digit templates.
+        MARGIN=1 removes the outermost pixel (cell border/divider) while
+        keeping enough sliding room for large digit templates like 5 (25×30)."""
+        MARGIN = 1
         if cell_img.shape[0] <= 2 * MARGIN or cell_img.shape[1] <= 2 * MARGIN:
             return None
         inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
         best_num = None
-        best_score = 0.35
+        best_score = 0.40
         for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
             tmpl = self.matcher.templates.get(name.replace(".png", "_digit.png"))
             if tmpl is None:

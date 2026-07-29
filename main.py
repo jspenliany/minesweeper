@@ -206,6 +206,8 @@ class MinesweeperBot:
         self.calib = calib
         self.closed_baseline = None
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
+        # Clear any flagged-cell state from previous games
+        self.board.marked_cells.clear()
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
 
         # Compute per-cell closed_tile baseline from the fresh all-closed board

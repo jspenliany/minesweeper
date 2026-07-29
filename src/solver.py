@@ -35,8 +35,10 @@ class Solver:
         Action: 'CLICK' (Safe), 'MARK' (Mine), 'GUESS' (Random), 'NONE'
         """
         # 1. Basic Logic: T1 (Simple count matching)
-        # Rule: If a number's remaining unknown neighbors == remaining mines to find, then all unknowns are mines.
-        # Rule: If a number's remaining mines == already marked mines, then all other unknowns are safe.
+        # Priority: always return MARK before CLICK, so mine flagging
+        # is never skipped by an earlier cell's "safe click" deduction.
+        
+        deferred_clicks = []
         
         for r in range(self.rows):
             for c in range(self.cols):
@@ -64,9 +66,13 @@ class Solver:
                 
                 # Case B: All remaining unknowns must be safe
                 if len(mines) == val:
-                    first_u = unknowns[0]
-                    reason = f"Cell ({r},{c}) has value {val}, and {len(mines)} mines already found around it. All other neighbors are safe."
-                    return 'CLICK', first_u, reason
+                    deferred_clicks.append((r, c, val, len(mines), unknowns[0]))
+        
+        # Return first deferred CLICK (if any) after exhausting all MARK opportunities
+        if deferred_clicks:
+            r, c, val, mines_found, first_u = deferred_clicks[0]
+            reason = f"Cell ({r},{c}) has value {val}, and {mines_found} mines already found around it. All other neighbors are safe."
+            return 'CLICK', first_u, reason
 
         # 2. Advanced Logic: T2 (Pairwise constraint overlap)
         # For any two number cells (A,B), we know:
@@ -80,6 +86,8 @@ class Solver:
 
         cell_list = [(r, c) for r in range(self.rows) for c in range(self.cols)
                      if 0 <= self.grid[r, c] <= 8]
+        deferred_clicks = []
+
         for i in range(len(cell_list)):
             r1, c1 = cell_list[i]
             v1 = self.grid[r1, c1]
@@ -124,8 +132,8 @@ class Solver:
                             f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) must be mines."
 
                 if r1_rem - k == 0 and x > 0:
-                    return 'CLICK', list(x_only)[0], \
-                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) are safe."
+                    deferred_clicks.append((list(x_only)[0],
+                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) are safe."))
 
                 # Y_only: r2_rem - k mines
                 if r2_rem - k == y and y > 0:
@@ -135,19 +143,23 @@ class Solver:
                             f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) must be mines."
 
                 if r2_rem - k == 0 and y > 0:
-                    return 'CLICK', list(y_only)[0], \
-                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) are safe."
+                    deferred_clicks.append((list(y_only)[0],
+                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) are safe."))
 
                 # Common: k mines
                 if k == 0 and c > 0:
-                    return 'CLICK', list(common)[0], \
-                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: no mines in shared area, all {c} are safe."
+                    deferred_clicks.append((list(common)[0],
+                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: no mines in shared area, all {c} are safe."))
 
                 if k == c and c > 0:
                     unmarked = [cell for cell in common if cell not in self.marked_cells]
                     if unmarked:
                         return 'MARK', unmarked[0], \
                             f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {c} shared cells must be mines."
+
+        if deferred_clicks:
+            cell, reason = deferred_clicks[0]
+            return 'CLICK', cell, reason
 
         # 3. GUESS: Last resort if no deterministic action found
         unknowns = []
