@@ -1,13 +1,15 @@
 @startuml
 ' SPDX-License-Identifier: MIT
-' Minesweeper Bot - Global Sequence Diagram
+' Minesweeper Bot - Global Sequence Diagram (v2, aligns with current implementation)
 
 skinparam participantPadding 20
 skinparam boxPadding 10
 
 actor User
 participant MinesweeperBot as Bot
-participant Vision
+participant Capture
+participant Matcher
+participant Board
 participant Solver
 participant Controller
 participant "Win32 API" as Win32
@@ -16,107 +18,116 @@ participant "Minesweeper Game" as Game
 
 == IDLE: Wait for Game Window ==
 loop every 1 sec
-  Bot -> Vision: get_screenshot()
-  Vision -> Win32: find_window_by_title()
-  Vision -> pyautogui: screenshot(region/clip)
-  Vision --> Bot: screen (cv::Mat)
-  Bot -> Vision: find_image(screen, board_tl.png)
-  alt anchor found
-    Vision --> Bot: (ax, ay, aw, ah)
-    Bot -> Bot: state = "MAIN_MENU"
+  Bot -> Capture: get_screenshot()
+  Capture -> Win32: find_window_by_title(MINESWEEPER_KEYWORDS)
+  Capture --> Bot: screen + window_info
+  Bot -> Matcher: find_image(screen, restart_button.png)
+  alt restart button found
+    Matcher --> Bot: (rx, ry, rw, rh)
+    Bot -> Bot: state = "START_GAME"
   else not found
-    Vision --> Bot: None
-  end
-end
-
-== MAIN_MENU: Start New Game ==
-Bot -> Bot: _focus_game_window()
-Bot -> Win32: find_window_by_title()
-Win32 --> Bot: hwnd
-Bot -> Win32: SetForegroundWindow(hwnd)
-Bot -> pyautogui: press('f2')
-Bot -> Bot: state = "TEST_CALIBRATION"
-
-== TEST_CALIBRATION: Corner Calibration ==
-Bot -> Vision: calibrate_grid()
-  Vision -> Vision: get_screenshot() (window client area)
-  Vision -> Vision: find_image(screen, board_tl.png)
-  Vision -> Vision: matchTemplate(closed_tile) full region
-  Vision -> Vision: filter my >= anchor_bottom (remove toolbar)
-  Vision -> Vision: sort by (y, x) -> pick top-leftmost
-  Vision -> Vision: _screen_to_client(tile_center) -> origin_x/y
-  Vision --> Bot: {origin_x, origin_y, cell_w, cell_h}
-
-group 4-corner click + verify [ _verify_calibration() ]
-  Bot -> Bot: Controller = (origin_x, origin_y, cell_w, cell_h)
-  loop 4 corners: (0,0), (0,29), (15,0), (15,29)
-    Bot -> Bot: _focus_game_window()
-    Bot -> Controller: click_cell(r, c)
-      Controller -> pyautogui: moveTo(target_x, target_y)
-      Controller -> pyautogui: click(button='left')
-    note over Game: cell clicked open
-  end
-
-  Bot -> pyautogui: screenshot() (full screen)
-  note over Bot: draw corner circles -> calibration_test_final.png
-
-  Bot -> Vision: analyze_board(board_info)
-    Vision -> Vision: get_screenshot()
-    loop 16 rows * 30 cols
-      Vision -> Vision: crop cell -> matchTemplate(flag/mine/numbers)
-      alt match > 0.85
-        Vision -> Vision: record val
-      else
-        Vision -> Vision: matchTemplate(closed_tile) > 0.9 -> -1
-        Vision -> Vision: else -> -2 (blank)
-      end
+    Bot -> Matcher: find_image(screen, board_tl.png)
+    alt anchor found
+      Matcher --> Bot: (ax, ay, aw, ah)
+      Bot -> Bot: state = "START_GAME"
     end
-    Vision --> Bot: matrix (16x30)
-
-  alt all 4 corners opened (val != -1)
-    Bot -> Bot: state = "FIRST_MOVE"
-  else some corners still closed
-    Bot -> Bot: state = "IDLE" (calibration failed)
   end
 end
 
-== FIRST_MOVE: First Click ==
-Bot -> Vision: calibrate_grid()
-Vision --> Bot: {origin_x, origin_y, cell_w, cell_h}
-Bot -> Bot: Controller = (...)
-Bot -> Bot: Solver = (rows=16, cols=30)
+== START_GAME: Prepare New Game ==
 Bot -> Bot: _focus_game_window()
-Bot -> Controller: click_cell(7, 14) (board center)
-Bot -> Bot: state = "PLAYING"
+Bot -> Win32: find_window_by_title(MINESWEEPER_KEYWORDS)
+Win32 --> Bot: hwnd
+Bot -> Win32: ShowWindow(hwnd, SW_RESTORE)
+Bot -> Win32: SetForegroundWindow(hwnd)
+Bot -> Win32: BringWindowToTop(hwnd)
+Bot -> pyautogui: click(title bar center)
+Bot -> Bot: state = "FIRST_MOVE"
 
-== PLAYING: Main Game Loop ==
-loop every 1 sec
+== FIRST_MOVE: Calibrate & First Click ==
+Bot -> Board: find_board()
+  Board -> Capture: get_screenshot()
+  Board -> Matcher: match_all(screen, "board_tl.png", threshold=0.7)
+  Board -> Matcher: match_all(screen, "board_br.png", threshold=0.7)
+  alt anchor match succeeded
+    note over Board: TL = top-left-most, BR = bottom-right-most
+    Board -> Board: infer grid size (30x16 / 16x16 / 9x9)
+    note over Board: visual_cell_w/h = template.shape
+  else fallback
+    Board -> Board: _find_board_contour() [edge detection]
+    Board -> Board: color-mask fallback [HSV]
+  end
+  Board --> Bot: calib {origin_x/y, cell_w/h, visual_cell_w/h, rows, cols}
+Bot -> Bot: self.calib = calib
+Bot -> Board: compute_closed_baseline(calib)
+  Board -> Capture: get_screenshot()
+  loop rows * cols
+    Board -> Board: crop cell → gray.var()
+  end
+  Board --> Bot: baseline (rows x cols float)
+Bot -> Matcher: resize_tile_templates(visual_cell_w, visual_cell_h)
+  loop tile PNGs (1..5, closed_tile, flag, mine…)
+    Matcher -> Matcher: cv2.resize(tmpl, (cell_w, cell_h))
+    Matcher -> Matcher: _crop_digit() → 1_digit..5_digit
+  end
+Bot -> Board: analyze_board(calib + baseline)
+  note over Board: logs pre-first-click matrix (rows x cols)
+Bot -> Bot: self.state = "PLAYING"
+note over Game: user sees center cell opened
+
+== IDLE → PLAYING via Single Click ==
+Bot -> Bot: _focus_game_window()
+Bot -> Controller: click_cell(center_r, center_c, right_click=False)
+Bot -> Bot: wait 3 seconds for cascade settle
+
+== PLAYING: Deduction Loop ==
+loop every 1 sec while state == "PLAYING"
   Bot -> Bot: _handle_dialogs()
     Bot -> Win32: GetForegroundWindow()
     Bot -> Win32: GetWindowTextW()
-    alt title contains "game over" / "Game Over"
-      Bot -> Win32: SetForegroundWindow(hwnd)
+    alt "游戏失败" / "Game Over"
       Bot -> pyautogui: hotkey('alt', 'p')
       Bot -> Bot: state = "FIRST_MOVE"
-      note over Bot: dialog handled, skip this cycle
-    else title contains "new game" / "新游戏"
+    else "游戏胜利" / "Victory" / "You Win"
+      Bot -> pyautogui: hotkey('alt', 'p')
+      Bot -> Bot: state = "FIRST_MOVE"
+    else "新游戏"
       Bot -> pyautogui: hotkey('alt', 'k')
-      note over Bot: dismiss dialog, continue
-    else title contains "Minesweeper" / "扫雷"
-      note over Bot: normal game window, continue
+    else any MINESWEEPER_KEYWORD matched
+      note over Bot: normal window, continue
+    else title mismatch
+      Bot -> Win32: SetForegroundWindow (retry)
     end
-  alt dialog was handled
-    Bot -> Bot: skip rest of loop
+  alt dialog handled → skip cycle
   end
 
-  Bot -> Vision: analyze_board(board_info)
-  Vision --> Bot: matrix
-
-  note over Bot: print(matrix[:5]) to console
-
+  Bot -> Board: analyze_board(calib + baseline)
+    Board -> Capture: get_screenshot()
+    loop rows * cols
+      Board -> Board: crop cell → gray.var()
+      alt |var - baseline| / max(baseline, 1) < 0.35
+        note over Board: CLOSED → -1
+      else digit template match (MARGIN=1, threshold ≥ 0.40)
+        Board -> Board: _classify_cell_by_digit_templates()
+        note over Board: 1_digit..5_digit via TM_CCOEFF_NORMED
+      else color fallback
+        Board -> Board: _classify_cell_by_color()
+        note over Board: blank(-2) / number / unrecognized(-3)
+      end
+    end
+    Board --> Bot: matrix (dtype=int)
   Bot -> Solver: update_grid(matrix)
-  note over Solver: force marked_cells to val=10 (anti vision miss)
+    note over Solver: force marked_cells entries to 10
   Bot -> Solver: solve()
+    note over Solver
+      T1: iterate all number cells
+        Case A (all unknown = mine) → MARK
+        Case B (all safe) → deferred to after T1
+        MARK returned immediately, CLICK deferred
+      T2: pairwise constraint overlap
+        same MARK-first priority
+      GUESS: random unknown
+    end note
   Solver --> Bot: (action, coords, reason)
 
   alt action == 'NONE'
@@ -125,61 +136,81 @@ loop every 1 sec
   else action == 'CLICK'
     Bot -> Bot: _focus_game_window()
     Bot -> Controller: click_cell(r, c, right_click=False)
+    Bot -> Bot: wait 2 seconds
     Bot -> Bot: _handle_dialogs()
 
   else action == 'MARK'
-    note over Bot: 1. screenshot + red circle
-    Bot -> Vision: get_screenshot()
-    Bot -> cv2: circle(pre_img, cell_center)
+    note over Bot: 1. screenshot with red circle
+    Bot -> Capture: get_screenshot()
+    Bot -> cv2: circle(pre_img, cell_center, red)
     Bot -> cv2: imwrite("flag0001.png")
-    User -> Bot: review pause (5 sec)
-    note over Bot: 2. wait 5 sec for user review
+    Bot -> Bot: wait 2 seconds for user review
     Bot -> Bot: _focus_game_window()
     Bot -> Controller: click_cell(r, c, right_click=True)
-    Bot -> Solver: mark_cell(r, c)
+    Bot -> Board: mark_cell(r, c)
+    note over Board: adds to shared marked_cells set
+    Bot -> Bot: wait 1 second
     Bot -> Bot: _handle_dialogs()
 
     group Post-Mark Cascade [ _cascade_flag_clicks() ]
       loop up to 100 times
-        Bot -> Vision: analyze_board(board_info)
+        Bot -> Board: analyze_board(calib + baseline)
         Bot -> Solver: update_grid(matrix)
         Bot -> Solver: solve()
         alt action == 'CLICK'
           Bot -> Controller: click_cell(cell, right_click=False)
+          Bot -> Bot: wait 2 seconds
         else action == 'MARK'
           Bot -> Controller: click_cell(cell, right_click=True)
-          Bot -> Solver: mark_cell(cell)
+          Bot -> Board: mark_cell(cell)
+          Bot -> Bot: wait 1 second
         else NONE / GUESS
           note over Bot: cascade ends
         end
+        Bot -> Bot: _handle_dialogs()
+        note over Bot: repeat-prevention: break if same (action, r, c)
       end
     end
 
   else action == 'GUESS'
     Bot -> Bot: _focus_game_window()
     Bot -> Controller: click_cell(r, c, right_click=False)
+    Bot -> Bot: wait 5 seconds
     Bot -> Bot: _handle_dialogs()
   end
 
-  Bot -> Vision: get_screenshot()
-  Bot -> Vision: find_image(screen, game_over_fragment.png / win_fragment.png)
-  alt game end detected
+  Bot -> Capture: get_screenshot()
+  Bot -> Matcher: find_image(screen, "game_over_fragment.png")
+  alt game over detected
     Bot -> Bot: state = "RESULT"
   end
 end
 
 == RESULT: Game End Handling ==
-Bot -> Bot: _handle_dialogs()
-alt dialog handled (Alt+P / Alt+K)
-  note over Bot: state already switched
-else no dialog found
-  Bot -> Vision: get_screenshot()
-  Bot -> Vision: find_image(screen, restart_button.png)
+Bot -> Bot: _focus_game_window()
+loop up to 10 attempts (1 sec each)
+  Bot -> Bot: _handle_dialogs()
+  alt dialog handled
+    note over Bot: state already switched
+    break
+  end
+end
+alt no dialog handled
+  Bot -> Capture: get_screenshot()
+  Bot -> Matcher: find_image(screen, "restart_button.png")
   alt restart button found
     Bot -> Controller: click_screen_pos(button_center)
     Bot -> Bot: state = "FIRST_MOVE"
-  else not found
-    Bot -> Bot: state = "IDLE"
+  else fallback
+    Bot -> Bot: _focus_game_window()
+    Bot -> pyautogui: hotkey('alt', 'p')
+    Bot -> Bot: wait 1 second
+    Bot -> Bot: _focus_game_window() again
+    alt "新游戏" in title
+      Bot -> pyautogui: hotkey('alt', 'n')
+      Bot -> Bot: wait 0.5 sec
+    end
+    Bot -> Bot: state = "FIRST_MOVE"
   end
 end
 
