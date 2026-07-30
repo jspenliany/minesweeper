@@ -200,6 +200,8 @@ class MinesweeperBot:
 
     def _handle_first_move(self):
         logging.info("State: FIRST_MOVE. Calibrating fresh board...")
+        # Clear any flagged-cell state from previous games BEFORE anything else
+        self.board.marked_cells.clear()
         calib = self.board.find_board()
         if not calib:
             logging.error("Calibration failed in FIRST_MOVE. Returning to IDLE.")
@@ -208,8 +210,6 @@ class MinesweeperBot:
         self.calib = calib
         self.closed_baseline = None
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
-        # Clear any flagged-cell state from previous games
-        self.board.marked_cells.clear()
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
 
         # Compute per-cell closed_tile baseline from the fresh all-closed board
