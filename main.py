@@ -92,7 +92,7 @@ class MinesweeperBot:
                 print_report()
                 logging.info("Exiting program.")
                 break
-            time.sleep(0.3)
+            time.sleep(0)
 
     def _focus_game_window(self):
         """Bring the Minesweeper window to focus via Win32 API or fallback click"""
@@ -234,7 +234,7 @@ class MinesweeperBot:
         self._focus_game_window()
         self.controller.click_cell(r, c)
         logging.info(f"First move at ({r}, {c}). Waiting 3 seconds before entering PLAYING state.")
-        time.sleep(1.5)
+        time.sleep(0.75)
         self.state = "PLAYING"
 
     def _handle_dialogs(self):
@@ -325,7 +325,7 @@ class MinesweeperBot:
                     continue
                 logging.info(Reasoner.format(action, coords, reason))
                 self.controller.click_cell(r, c, right_click=False)
-                time.sleep(1.5)
+                time.sleep(0.75)
                 if self._handle_dialogs(): return
                 # Re-analyze so remaining batch items can verify they're still unknown
                 board_info = self.calib.copy() if self.calib else {}
@@ -362,7 +362,7 @@ class MinesweeperBot:
             elif action == 'GUESS':
                 logging.info(Reasoner.format(action, coords, reason))
                 self.controller.click_cell(coords[0], coords[1], right_click=False)
-                time.sleep(1.5)
+                time.sleep(0.75)
                 if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
@@ -377,6 +377,7 @@ class MinesweeperBot:
 
     def _cascade_flag_clicks(self, max_iter=100):
         """After marking a flag, immediately cascade: if a number cell's flags match its value, click all safe neighbors"""
+        focus_counter = 0
         for _ in range(max_iter):
             if self._handle_dialogs():
                 return
@@ -392,11 +393,14 @@ class MinesweeperBot:
                 break
 
             for action, coords, reason in actions:
+                focus_counter += 1
+                do_focus = (focus_counter % 10 == 0)
                 if action == 'CLICK':
                     logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
-                    self._focus_game_window()
+                    if do_focus:
+                        self._focus_game_window()
                     self.controller.click_cell(coords[0], coords[1], right_click=False)
-                    time.sleep(1)
+                    time.sleep(0.3)
                     if self._handle_dialogs():
                         return
                 elif action == 'MARK':
@@ -412,7 +416,8 @@ class MinesweeperBot:
                     logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
         #-----------------------------------------------------image save-------end
                     logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
-                    self._focus_game_window()
+                    if do_focus:
+                        self._focus_game_window()
                     self.controller.click_cell(r, c, right_click=True)
                     self.board.mark_cell(r, c)
                     time.sleep(0.5)
@@ -425,11 +430,11 @@ class MinesweeperBot:
         # Ensure game window is foreground so dialog titles are visible
         self._focus_game_window()
         
-        # Retry dialog detection for ~10s (dialog may appear with delay)
+        # Retry dialog detection (dialog may appear with delay)
         for attempt in range(10):
             if self._handle_dialogs():
                 return
-            time.sleep(1)
+            time.sleep(0.5)
         
         # Fallback: try to find restart button in screenshot
         screen = self.capture.get_screenshot()
