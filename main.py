@@ -210,7 +210,10 @@ class MinesweeperBot:
         self.calib = calib
         self.closed_baseline = None
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
+        self.rows = calib.get('rows', self.rows)
+        self.cols = calib.get('cols', self.cols)
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
+        self.flag_screenshot_counter = 0
 
         # Compute per-cell closed_tile baseline from the fresh all-closed board
         board_info = calib.copy()
@@ -336,6 +339,9 @@ class MinesweeperBot:
                 self.solver.update_grid(matrix)
             elif action == 'MARK':
                 r, c = coords
+                if (r, c) in self.board.marked_cells:
+                    logging.warning(f"MARK on already-marked cell ({r},{c}), skipping")
+                    continue
                 # 1. Screenshot with red circle BEFORE marking (documents the decision)
                 self.flag_screenshot_counter += 1
         #-----------------------------------------------------image save-------start
@@ -347,15 +353,14 @@ class MinesweeperBot:
                 cv2.imwrite(filename, pre_img)
                 logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
         #-----------------------------------------------------image save-------end
-                # 2. Wait 5 seconds for user to review the screenshot
-                logging.info("Waiting 1 seconds for user review...")
-                time.sleep(1)
+                # 2. Brief pause for screenshot review
+                time.sleep(0.25)
                 # 3. Log reasoning
                 logging.info(Reasoner.format(action, coords, reason))
                 # 4. Right-click to place flag
                 self.controller.click_cell(r, c, right_click=True)
                 self.board.mark_cell(r, c)
-                time.sleep(0.5)
+                time.sleep(0.35)
                 if self._handle_dialogs(): return
                 # 5. Post-mark cascade
                 self._cascade_flag_clicks()
@@ -378,6 +383,7 @@ class MinesweeperBot:
     def _cascade_flag_clicks(self, max_iter=100):
         """After marking a flag, immediately cascade: if a number cell's flags match its value, click all safe neighbors"""
         focus_counter = 0
+        clicked_this_cascade = set()
         for _ in range(max_iter):
             if self._handle_dialogs():
                 return
@@ -396,15 +402,31 @@ class MinesweeperBot:
                 focus_counter += 1
                 do_focus = (focus_counter % 10 == 0)
                 if action == 'CLICK':
+                    r, c = coords
+                    if self.solver.grid[r, c] != -1:
+                        continue
+                    if (r, c) in clicked_this_cascade:
+                        logging.warning(f"[Cascade] CLICK on already-visited cell ({r},{c}), skipping")
+                        continue
+                    clicked_this_cascade.add((r, c))
                     logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                     if do_focus:
                         self._focus_game_window()
-                    self.controller.click_cell(coords[0], coords[1], right_click=False)
+                    self.controller.click_cell(r, c, right_click=False)
                     time.sleep(0.3)
                     if self._handle_dialogs():
                         return
+                    board_info = self.calib.copy() if self.calib else {}
+                    board_info['rows'] = self.rows
+                    board_info['cols'] = self.cols
+                    board_info['closed_baseline'] = self.closed_baseline
+                    matrix, _ = self.board.analyze_board(board_info)
+                    self.solver.update_grid(matrix)
                 elif action == 'MARK':
                     r, c = coords
+                    if (r, c) in self.board.marked_cells:
+                        logging.warning(f"[Cascade] MARK on already-marked cell ({r},{c}), skipping")
+                        continue
                     self.flag_screenshot_counter += 1
         #-----------------------------------------------------image save-------start
                     pre_img = self.capture.get_screenshot()
@@ -420,7 +442,7 @@ class MinesweeperBot:
                         self._focus_game_window()
                     self.controller.click_cell(r, c, right_click=True)
                     self.board.mark_cell(r, c)
-                    time.sleep(0.5)
+                    time.sleep(0.35)
                     if self._handle_dialogs():
                         return
 
