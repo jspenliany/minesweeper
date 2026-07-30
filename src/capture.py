@@ -4,6 +4,7 @@ import pyautogui
 import logging
 import ctypes
 from ctypes import wintypes
+from src.timer import timer
 
 user32 = ctypes.windll.user32
 
@@ -19,6 +20,7 @@ MINESWEEPER_KEYWORDS = [
 # Window classes that are definitely NOT Minesweeper
 EXCLUDED_CLASSES = {"CabinetWClass", "ExploreWClass", "Progman", "WorkerW", "ConsoleWindowClass"}
 
+@timer
 def find_window_by_title(keywords):
     candidates = []
     def enum_callback(handle, _):
@@ -76,6 +78,7 @@ class Capture:
             'height': rect.bottom
         }
 
+    @timer
     def get_screenshot(self):
         win_rect = self.get_window_client_rect()
         if win_rect and win_rect['width'] > 200 and win_rect['height'] > 200:

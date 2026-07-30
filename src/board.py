@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import logging
+from src.timer import timer
 
 class Board:
     def __init__(self, capture, matcher, expected_cols=30):
@@ -103,6 +104,7 @@ class Board:
                      f"{best_info[6]}x{best_info[7]} grid, step={best_info[8]:.1f}, cell={cell_w}x{cell_h}")
         return best_info
 
+    @timer
     def find_board(self):
         screen = self.capture.get_screenshot()
         debug_img = screen.copy()
@@ -231,6 +233,7 @@ class Board:
             "cols": cols,
         }
 
+    @timer
     def compute_closed_baseline(self, board_info):
         """Compute per-cell grayscale variance as a 'closed tile' baseline.
            Closed tiles have high variance (3D bevel: bright highlight + dark shadow)."""
@@ -258,6 +261,7 @@ class Board:
                 baseline[r, c] = float(gray.var())
         return baseline
 
+    @timer
     def analyze_board(self, board_info):
         screen = self.capture.get_screenshot()
         rows = board_info.get('rows', 9)
@@ -326,6 +330,7 @@ class Board:
 
         return matrix, scores
 
+    @timer
     def _classify_cell_by_digit_templates(self, cell_img):
         """Match inner region (MARGIN=1) against cropped digit templates.
         MARGIN=1 removes the outermost pixel (cell border/divider) while

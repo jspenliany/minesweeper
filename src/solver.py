@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+from src.timer import timer
 
 class Solver:
     def __init__(self, rows, cols, marked_cells=None):
@@ -28,65 +29,62 @@ class Solver:
                     neighbors.append((nr, nc))
         return neighbors
 
+    @timer
     def solve(self):
         """
         Perfect solver logic.
-        Returns: (action, coords, reasoning)
+        Returns: list of (action, coords, reasoning) tuples.
         Action: 'CLICK' (Safe), 'MARK' (Mine), 'GUESS' (Random), 'NONE'
+        Batching: all deterministic CLICK actions from the same round are
+        returned together so the caller can execute them in batch.
         """
-        # 1. Basic Logic: T1 (Simple count matching)
-        # Priority: always return MARK before CLICK, so mine flagging
-        # is never skipped by an earlier cell's "safe click" deduction.
-        
-        deferred_clicks = []
-        
+        results = []
+
+        # === Phase 1: T1 - Basic Logic ===
+        # Priority: MARK before CLICK (mine flagging is never skipped)
         for r in range(self.rows):
             for c in range(self.cols):
                 val = self.grid[r, c]
-                if val < 0 or val > 8: continue # Only process number cells
-                
+                if val < 0 or val > 8: continue
+
                 neighbors = self.get_neighbors(r, c)
                 unknowns = [n for n in neighbors if self.grid[n[0], n[1]] == -1]
-                mines = [n for n in neighbors if self.grid[n[0], n[1]] == 9 or self.grid[n[0], n[1]] == 10]
+                mines = [n for n in neighbors if self.grid[n[0], n[1]] in (9, 10)]
                 open_unrec = [n for n in neighbors if self.grid[n[0], n[1]] == -3]
-                
-                # -3 is open but unrecognized (safe, not a mine)
+
                 if not unknowns and not open_unrec:
                     continue
-                
-                # Case A: All remaining unknowns must be mines
+
+                # T1-A: unknowns == remaining mines → all must be mines
                 if len(unknowns) == (val - len(mines)):
-                    # Skip cells we've already tried marking (avoids flag→? cycling)
                     unmarked = [u for u in unknowns if u not in self.marked_cells]
                     if not unmarked:
                         continue
                     first_u = unmarked[0]
-                    reason = f"Cell ({r},{c}) has value {val}, and exactly {len(unknowns)} unknown neighbors left. All must be mines."
-                    return 'MARK', first_u, reason
-                
-                # Case B: All remaining unknowns must be safe
+                    return [('MARK', first_u,
+                             f"Cell ({r},{c}) has value {val}, and exactly {len(unknowns)} unknown neighbors left. All must be mines.")]
+
+                # T1-B: mines == val → all remaining unknowns are safe
                 if len(mines) == val:
-                    deferred_clicks.append((r, c, val, len(mines), unknowns[0]))
-        
-        # Return first deferred CLICK (if any) after exhausting all MARK opportunities
-        if deferred_clicks:
-            r, c, val, mines_found, first_u = deferred_clicks[0]
-            reason = f"Cell ({r},{c}) has value {val}, and {mines_found} mines already found around it. All other neighbors are safe."
-            return 'CLICK', first_u, reason
+                    for u in unknowns:
+                        results.append(('CLICK', u,
+                            f"Cell ({r},{c}) has value {val}, and {len(mines)} mines already found around it. All other neighbors are safe."))
 
-        # 2. Advanced Logic: T2 (Pairwise constraint overlap)
-        # For any two number cells (A,B), we know:
-        #   R_A = remaining mines in U_A = val_A - mines_found_A
-        #   R_B = remaining mines in U_B = val_B - mines_found_B
-        #   X_only = U_A \ U_B,  Y_only = U_B \ U_A,  common = U_A ∩ U_B
-        # Let k = mines in common → k_min ≤ k ≤ k_max
-        #   k_min = max(0, R_A - |X_only|, R_B - |Y_only|)
-        #   k_max = min(R_A, R_B, |common|)
-        # If k_min == k_max, k is forced → deduce mines/safe in X_only, Y_only, common
+        if results:
+            # Deduplicate CLICKs (same cell may appear from multiple number cells)
+            seen = set()
+            unique = []
+            for a, c, r in results:
+                if a == 'CLICK' and c in seen:
+                    continue
+                if a == 'CLICK':
+                    seen.add(c)
+                unique.append((a, c, r))
+            return unique
 
+        # === Phase 2: T2 - Pairwise Constraint Overlap ===
         cell_list = [(r, c) for r in range(self.rows) for c in range(self.cols)
                      if 0 <= self.grid[r, c] <= 8]
-        deferred_clicks = []
 
         for i in range(len(cell_list)):
             r1, c1 = cell_list[i]
@@ -111,69 +109,73 @@ class Solver:
                 x_only = u1 - u2
                 y_only = u2 - u1
                 common = u1 & u2
-
                 x, y, c = len(x_only), len(y_only), len(common)
                 if x + y + c == 0:
                     continue
 
                 k_min = max(0, r1_rem - x, r2_rem - y)
                 k_max = min(r1_rem, r2_rem, c)
-
                 if k_min != k_max:
                     continue
-
                 k = k_min
 
-                # X_only: r1_rem - k mines
+                # X_only mines
                 if r1_rem - k == x and x > 0:
                     unmarked = [cell for cell in x_only if cell not in self.marked_cells]
                     if unmarked:
-                        return 'MARK', unmarked[0], \
-                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) must be mines."
+                        return [('MARK', unmarked[0],
+                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) must be mines.")]
 
+                # X_only safe
                 if r1_rem - k == 0 and x > 0:
-                    deferred_clicks.append((list(x_only)[0],
-                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) are safe."))
+                    for cell in x_only:
+                        results.append(('CLICK', cell,
+                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(x_only)} cells unique to ({r1},{c1}) are safe."))
 
-                # Y_only: r2_rem - k mines
+                # Y_only mines
                 if r2_rem - k == y and y > 0:
                     unmarked = [cell for cell in y_only if cell not in self.marked_cells]
                     if unmarked:
-                        return 'MARK', unmarked[0], \
-                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) must be mines."
+                        return [('MARK', unmarked[0],
+                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) must be mines.")]
 
+                # Y_only safe
                 if r2_rem - k == 0 and y > 0:
-                    deferred_clicks.append((list(y_only)[0],
-                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) are safe."))
+                    for cell in y_only:
+                        results.append(('CLICK', cell,
+                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {len(y_only)} cells unique to ({r2},{c2}) are safe."))
 
-                # Common: k mines
+                # Common safe
                 if k == 0 and c > 0:
-                    deferred_clicks.append((list(common)[0],
-                        f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: no mines in shared area, all {c} are safe."))
+                    for cell in common:
+                        results.append(('CLICK', cell,
+                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: no mines in shared area, all {c} are safe."))
 
+                # Common mines
                 if k == c and c > 0:
                     unmarked = [cell for cell in common if cell not in self.marked_cells]
                     if unmarked:
-                        return 'MARK', unmarked[0], \
-                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {c} shared cells must be mines."
+                        return [('MARK', unmarked[0],
+                            f"Constraint ({r1},{c1})={v1} & ({r2},{c2})={v2}: all {c} shared cells must be mines.")]
 
-        if deferred_clicks:
-            cell, reason = deferred_clicks[0]
-            return 'CLICK', cell, reason
+        if results:
+            seen = set()
+            unique = []
+            for a, c, r in results:
+                if a == 'CLICK' and c in seen:
+                    continue
+                if a == 'CLICK':
+                    seen.add(c)
+                unique.append((a, c, r))
+            return unique
 
-        # 3. GUESS: Last resort if no deterministic action found
-        unknowns = []
-        for r in range(self.rows):
-            for c in range(self.cols):
-                if self.grid[r, c] == -1:
-                    unknowns.append((r, c))
-        
+        # === Phase 3: GUESS ===
+        unknowns = [(r, c) for r in range(self.rows) for c in range(self.cols) if self.grid[r, c] == -1]
         if not unknowns:
-            return 'NONE', None, "Board fully solved!"
-            
+            return [('NONE', None, "Board fully solved!")]
         import random
         guess_pos = random.choice(unknowns)
-        return 'GUESS', guess_pos, f"No deterministic logic available. Choosing a random safe candidate at {guess_pos}."
+        return [('GUESS', guess_pos, f"No deterministic logic available. Choosing a random safe candidate at {guess_pos}.")]
 
 
 

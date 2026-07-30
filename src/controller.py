@@ -1,5 +1,6 @@
 import pyautogui
 import logging
+from src.timer import timer
 
 class Controller:
     def __init__(self, origin_x, origin_y, cell_w, cell_h):
@@ -16,6 +17,7 @@ class Controller:
         self.cell_w = cell_w
         self.cell_h = cell_h
 
+    @timer
     def click_cell(self, row, col, right_click=False):
         """
         执行点击操作
@@ -32,6 +34,7 @@ class Controller:
         pyautogui.moveTo(target_x, target_y)
         pyautogui.click(button=button)
 
+    @timer
     def click_screen_pos(self, x, y, right_click=False):
         """直接点击屏幕绝对坐标"""
         button = 'right' if right_click else 'left'

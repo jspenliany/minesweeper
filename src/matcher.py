@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import logging
 import os
+from src.timer import timer
 
 class Matcher:
     def __init__(self, assets_path=None):
@@ -70,6 +71,7 @@ class Matcher:
         x2 = min(img.shape[1], x2 + 1)
         return img[y1:y2, x1:x2]
 
+    @timer
     def find_image(self, target_img, template_name, threshold=0.8):
         template = self.templates.get(template_name)
         if template is None:
@@ -81,6 +83,7 @@ class Matcher:
             return max_loc[0], max_loc[1], w, h
         return None
 
+    @timer
     def match_all(self, target_img, template_name, threshold=0.8):
         template = self.templates.get(template_name)
         if template is None:
@@ -89,6 +92,7 @@ class Matcher:
         locations = np.where(res >= threshold)
         return [(int(x), int(y)) for x, y in zip(locations[1], locations[0])]
 
+    @timer
     def match_cell(self, cell_img, template_name):
         template = self.templates.get(template_name)
         if template is None or cell_img.shape[0] < template.shape[0] or cell_img.shape[1] < template.shape[1]:

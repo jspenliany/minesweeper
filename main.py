@@ -5,6 +5,7 @@ import cv2
 import ctypes
 from ctypes import wintypes
 from src.capture import Capture, find_window_by_title, MINESWEEPER_KEYWORDS
+from src.timer import print_report
 from src.matcher import Matcher
 from src.board import Board
 from src.solver import Solver, Reasoner
@@ -88,6 +89,7 @@ class MinesweeperBot:
             elif self.state == "RESULT":
                 self._handle_result()
             elif self.state == "EXIT":
+                print_report()
                 logging.info("Exiting program.")
                 break
             time.sleep(0.3)
@@ -243,7 +245,9 @@ class MinesweeperBot:
         
         # Game over dialog
         if "游戏失败" in title or "Game Over" in title:
-            logging.info("Game over dialog detected! Pressing Alt+P to start new game.")
+            logging.info("Game over dialog detected!")
+            print_report()
+            logging.info("Pressing Alt+P to start new game.")
             hwnd = user32.GetForegroundWindow()
             user32.SetForegroundWindow(hwnd)
             time.sleep(2)
@@ -254,7 +258,9 @@ class MinesweeperBot:
 
         # Victory dialog
         if "游戏胜利" in title or "Victory" in title or "You Win" in title:
-            logging.info("Victory dialog detected! Pressing Alt+P to start new game.")
+            logging.info("Victory dialog detected!")
+            print_report()
+            logging.info("Pressing Alt+P to start new game.")
             hwnd = user32.GetForegroundWindow()
             user32.SetForegroundWindow(hwnd)
             time.sleep(2)
@@ -302,58 +308,75 @@ class MinesweeperBot:
     #---------------------------print matrix-------end
 
         self.solver.update_grid(matrix)
-        action, coords, reason = self.solver.solve()
+        actions = self.solver.solve()
         
-        if action == 'NONE':
-            logging.info("Solver: " + reason)
+        if actions[0][0] == 'NONE':
+            logging.info("Solver: " + actions[0][2])
+            print_report()
             self.state = "RESULT"
             return
 
         self._focus_game_window()
-        if action == 'CLICK':
-            logging.info(Reasoner.format(action, coords, reason))
-            self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(1.5)
-            if self._handle_dialogs(): return
-        elif action == 'MARK':
-            r, c = coords
-            # 1. Screenshot with red circle BEFORE marking (documents the decision)
-            self.flag_screenshot_counter += 1
+        for action, coords, reason in actions:
+            if action == 'CLICK':
+                r, c = coords
+                # Skip cells already opened by cascade from a previous click in this batch
+                if self.solver.grid[r, c] != -1:
+                    continue
+                logging.info(Reasoner.format(action, coords, reason))
+                self.controller.click_cell(r, c, right_click=False)
+                time.sleep(1.5)
+                if self._handle_dialogs(): return
+                # Re-analyze so remaining batch items can verify they're still unknown
+                board_info = self.calib.copy() if self.calib else {}
+                board_info['rows'] = self.rows
+                board_info['cols'] = self.cols
+                board_info['closed_baseline'] = self.closed_baseline
+                matrix, _ = self.board.analyze_board(board_info)
+                self.solver.update_grid(matrix)
+            elif action == 'MARK':
+                r, c = coords
+                # 1. Screenshot with red circle BEFORE marking (documents the decision)
+                self.flag_screenshot_counter += 1
         #-----------------------------------------------------image save-------start
-            pre_img = self.capture.get_screenshot()
-            cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
-            cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
-            cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-            filename = f"flag{self.flag_screenshot_counter:04d}.png"
-            cv2.imwrite(filename, pre_img)
-            logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
+                pre_img = self.capture.get_screenshot()
+                cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+                cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
+                cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
+                filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                cv2.imwrite(filename, pre_img)
+                logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
         #-----------------------------------------------------image save-------end
-            # 2. Wait 5 seconds for user to review the screenshot
-            logging.info("Waiting 1 seconds for user review...")
-            time.sleep(1)
-            # 3. Log reasoning
-            logging.info(Reasoner.format(action, coords, reason))
-            # 4. Right-click to place flag
-            self.controller.click_cell(r, c, right_click=True)
-            self.board.mark_cell(r, c)
-            time.sleep(0.5)
-            if self._handle_dialogs(): return
-            # 5. Post-mark cascade
-            self._cascade_flag_clicks()
-        elif action == 'GUESS':
-            logging.info(Reasoner.format(action, coords, reason))
-            self.controller.click_cell(coords[0], coords[1], right_click=False)
-            time.sleep(1.5)
-            if self._handle_dialogs(): return
+                # 2. Wait 5 seconds for user to review the screenshot
+                logging.info("Waiting 1 seconds for user review...")
+                time.sleep(1)
+                # 3. Log reasoning
+                logging.info(Reasoner.format(action, coords, reason))
+                # 4. Right-click to place flag
+                self.controller.click_cell(r, c, right_click=True)
+                self.board.mark_cell(r, c)
+                time.sleep(0.5)
+                if self._handle_dialogs(): return
+                # 5. Post-mark cascade
+                self._cascade_flag_clicks()
+            elif action == 'GUESS':
+                logging.info(Reasoner.format(action, coords, reason))
+                self.controller.click_cell(coords[0], coords[1], right_click=False)
+                time.sleep(1.5)
+                if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
-        if self.matcher.find_image(screen, "game_over_fragment.png"):
+        if self.matcher.find_image(screen, "game_over_fragment.png", threshold=0.6):
             logging.info("Game end detected via game_over_fragment!")
+            print_report()
             self.state = "RESULT"
+            return
+        # Fallback: check if the game-over dialog appeared (title-based)
+        if self._handle_dialogs():
+            return
 
     def _cascade_flag_clicks(self, max_iter=100):
         """After marking a flag, immediately cascade: if a number cell's flags match its value, click all safe neighbors"""
-        last_action = None  # (action_type, r, c) to detect repeats
         for _ in range(max_iter):
             if self._handle_dialogs():
                 return
@@ -363,46 +386,41 @@ class MinesweeperBot:
             board_info['closed_baseline'] = self.closed_baseline
             matrix, _ = self.board.analyze_board(board_info)
             self.solver.update_grid(matrix)
-            action, coords, reason = self.solver.solve()
+            actions = self.solver.solve()
 
-            # Break if solver returns same cell as last iteration (board state unchanged)
-            current = (action, coords[0], coords[1]) if coords else None
-            if current and current == last_action:
-                logging.info(f"[Cascade] Same action {current} repeated; board state unchanged. Stopping cascade.")
+            if not actions or actions[0][0] in ('NONE', 'GUESS'):
                 break
-            last_action = current
 
-            if action == 'CLICK':
-                logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
-                self._focus_game_window()
-                self.controller.click_cell(coords[0], coords[1], right_click=False)
-                time.sleep(1)
-                if self._handle_dialogs():
-                    return
-            elif action == 'MARK':
-                r, c = coords
-                self.flag_screenshot_counter += 1
+            for action, coords, reason in actions:
+                if action == 'CLICK':
+                    logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
+                    self._focus_game_window()
+                    self.controller.click_cell(coords[0], coords[1], right_click=False)
+                    time.sleep(1)
+                    if self._handle_dialogs():
+                        return
+                elif action == 'MARK':
+                    r, c = coords
+                    self.flag_screenshot_counter += 1
         #-----------------------------------------------------image save-------start
-                pre_img = self.capture.get_screenshot()
-                cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
-                cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
-                cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-                filename = f"flag{self.flag_screenshot_counter:04d}.png"
-                cv2.imwrite(filename, pre_img)
-                logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
+                    pre_img = self.capture.get_screenshot()
+                    cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+                    cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
+                    cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
+                    filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                    cv2.imwrite(filename, pre_img)
+                    logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
         #-----------------------------------------------------image save-------end
-                logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
-                self._focus_game_window()
-                self.controller.click_cell(r, c, right_click=True)
-                self.board.mark_cell(r, c)
-                time.sleep(0.5)
-                if self._handle_dialogs():
-                    return
-            else:
-                break
+                    logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
+                    self._focus_game_window()
+                    self.controller.click_cell(r, c, right_click=True)
+                    self.board.mark_cell(r, c)
+                    time.sleep(0.5)
+                    if self._handle_dialogs():
+                        return
 
     def _handle_result(self):
-        logging.info("State: RESULT. Looking for dialogs...")
+        logging.info("State: RESULT.")
         
         # Ensure game window is foreground so dialog titles are visible
         self._focus_game_window()
