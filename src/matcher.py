@@ -12,12 +12,33 @@ class Matcher:
         self.assets_path = assets_path
         self.load_templates()
 
+    @staticmethod
+    def _crop_black_border(img, threshold=40):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        h, w = gray.shape
+        top = 0
+        while top < h and gray[top, :].max() <= threshold:
+            top += 1
+        bottom = h - 1
+        while bottom > top and gray[bottom, :].max() <= threshold:
+            bottom -= 1
+        left = 0
+        while left < w and gray[:, left].max() <= threshold:
+            left += 1
+        right = w - 1
+        while right > left and gray[:, right].max() <= threshold:
+            right -= 1
+        return img[top:bottom+1, left:right+1]
+
     def load_templates(self):
         anchor_dir = os.path.join(self.assets_path, "anchors")
         if os.path.exists(anchor_dir):
             for file in os.listdir(anchor_dir):
                 path = os.path.join(anchor_dir, file)
-                self.templates[file] = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                tmpl = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if tmpl is not None:
+                    tmpl = self._crop_black_border(tmpl)
+                self.templates[file] = tmpl
         tile_dir = os.path.join(self.assets_path, "tiles")
         if os.path.exists(tile_dir):
             for file in os.listdir(tile_dir):
