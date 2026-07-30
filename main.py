@@ -202,6 +202,7 @@ class MinesweeperBot:
         logging.info("State: FIRST_MOVE. Calibrating fresh board...")
         # Clear any flagged-cell state from previous games BEFORE anything else
         self.board.marked_cells.clear()
+        time.sleep(1.5)
         calib = self.board.find_board()
         if not calib:
             logging.error("Calibration failed in FIRST_MOVE. Returning to IDLE.")
@@ -300,14 +301,14 @@ class MinesweeperBot:
         
         logging.info("--- Current Logical Board ---")
     #---------------------------print matrix-------start
-        # for r in range(self.rows):
-        #     cells = []
-        #     for c in range(self.cols):
-        #         v = matrix[r, c]
-        #         s = scores[r, c]
-        #         cells.append(f"({v},{s*100:.0f}%)")
-        #     logging.info("  " + " ".join(cells))
-        # logging.info("--------------------------------")
+        for r in range(self.rows):
+            cells = []
+            for c in range(self.cols):
+                v = matrix[r, c]
+                s = scores[r, c]
+                cells.append(f"({v},{s*100:.0f}%)")
+            logging.info("  " + " ".join(cells))
+        logging.info("--------------------------------")
     #---------------------------print matrix-------end
 
         self.solver.update_grid(matrix)
@@ -337,6 +338,16 @@ class MinesweeperBot:
                 board_info['closed_baseline'] = self.closed_baseline
                 matrix, _ = self.board.analyze_board(board_info)
                 self.solver.update_grid(matrix)
+            # ---------------------------print matrix-------start
+                for r in range(self.rows):
+                    cells = []
+                    for c in range(self.cols):
+                        v = matrix[r, c]
+                        s = scores[r, c]
+                        cells.append(f"({v},{s * 100:.0f}%)")
+                    logging.info("  " + " ".join(cells))
+                logging.info("--------------------------------")
+            # ---------------------------print matrix-------end
             elif action == 'MARK':
                 r, c = coords
                 if (r, c) in self.board.marked_cells:
