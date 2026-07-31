@@ -218,7 +218,7 @@ class MinesweeperBot:
         self.rows = calib.get('rows', self.rows)
         self.cols = calib.get('cols', self.cols)
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
-        self.flag_screenshot_counter = 0
+        # self.flag_screenshot_counter = 0
 
         # Compute per-cell closed_tile baseline from the fresh all-closed board
         board_info = calib.copy()
@@ -363,7 +363,7 @@ class MinesweeperBot:
                     cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
                     cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
                     cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-                    filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                    filename = f"flag{self.flag_screenshot_counter:06d}.png"
                     cv2.imwrite(filename, pre_img)
                     logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
                 # 2. Brief pause for screenshot review
@@ -448,7 +448,7 @@ class MinesweeperBot:
                         cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
                         cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
                         cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-                        filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                        filename = f"flag{self.flag_screenshot_counter:06d}.png"
                         cv2.imwrite(filename, pre_img)
                         logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
                     logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
