@@ -339,6 +339,16 @@ class Board:
         if cell_img.shape[0] <= 2 * MARGIN or cell_img.shape[1] <= 2 * MARGIN:
             return None
         inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
+
+        # Blank guard: TM_CCOEFF_NORMED is color-blind (mean/variance normalized),
+        # so a blank cell's gray bevel can spuriously correlate with a digit shape.
+        # A real digit always has hundreds of strongly-colored pixels (saturation
+        # > 40); blank bevels are gray (saturation ~ 0). Bail out before matching.
+        arr = inner.astype(np.int32)
+        sat = arr.max(axis=2) - arr.min(axis=2)
+        if int((sat > 40).sum()) < 50:
+            return None
+
         best_num = None
         best_score = 0.40
         for name in ("1.png", "2.png", "3.png", "4.png", "5.png", "6.png"):
