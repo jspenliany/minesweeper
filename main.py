@@ -10,7 +10,7 @@ from src.matcher import Matcher
 from src.board import Board
 from src.solver import Solver, Reasoner
 from src.controller import Controller
-pyautogui.PAUSE = 0
+pyautogui.PAUSE = 0.05
 user32 = ctypes.windll.user32
 
 def get_foreground_window_title():
@@ -404,7 +404,7 @@ class MinesweeperBot:
                     continue
                 logging.info(Reasoner.format(action, coords, reason))
                 self.controller.click_cell(r, c, right_click=False)
-                time.sleep(0.75)
+                time.sleep(0.6)
                 if self._handle_dialogs(): return
                 # Re-analyze so remaining batch items can verify they're still unknown
                 board_info = self.calib.copy() if self.calib else {}
@@ -442,14 +442,14 @@ class MinesweeperBot:
                 # 4. Right-click to place flag
                 self.controller.click_cell(r, c, right_click=True)
                 self.board.mark_cell(r, c)
-                time.sleep(0.15)
+                time.sleep(0.05)
                 if self._handle_dialogs(): return
                 # 5. Post-mark cascade
                 self._cascade_flag_clicks()
             elif action == 'GUESS':
                 logging.info(Reasoner.format(action, coords, reason))
                 self.controller.click_cell(coords[0], coords[1], right_click=False)
-                time.sleep(0.75)
+                time.sleep(0.4)
                 if self._handle_dialogs(): return
         
         screen = self.capture.get_screenshot()
@@ -526,7 +526,7 @@ class MinesweeperBot:
                     self.controller.click_cell(r, c, right_click=True)
                     self.board.mark_cell(r, c)
                     any_executed = True
-                    time.sleep(0.15)
+                    time.sleep(0.05)
                     if self._handle_dialogs():
                         return
 
