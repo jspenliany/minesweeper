@@ -231,6 +231,7 @@ class Board:
             "window_offset_y": self.capture.window_offset_y,
             "rows": rows,
             "cols": cols,
+            "anchor_matched": anchor_info is not None,
         }
 
     @timer

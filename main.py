@@ -75,6 +75,8 @@ class MinesweeperBot:
         self.cols = None
         self.flag_screenshot_counter = 0
         self.calib = None  # latest board calibration data
+        self._last_sig = None       # matrix signature of the previous analyze cycle
+        self._stagnant_cycles = 0   # consecutive GUESS cycles with an unchanged board
 
     def run(self):
         logging.info("Minesweeper Bot started. Waiting for game...")
@@ -181,8 +183,9 @@ class MinesweeperBot:
     def _handle_test_calibration(self):
         logging.info("State: TEST_CALIBRATION. Detecting board grid...")
         calib = self.board.find_board()
-        if not calib:
-            logging.error("Calibration failed (grid not found). Waiting 6s before retry...")
+        if not calib or not calib.get('anchor_matched'):
+            logging.error("Calibration failed (grid not found / anchors not matched). "
+                          "Waiting 6s before retry...")
             time.sleep(6)
             self.state = "IDLE"
             return
@@ -202,23 +205,39 @@ class MinesweeperBot:
             time.sleep(0.5)
         self.state = "FIRST_MOVE"
 
-    def _handle_first_move(self):
-        logging.info("State: FIRST_MOVE. Calibrating fresh board...")
-        # Clear any flagged-cell state from previous games BEFORE anything else
-        self.board.marked_cells.clear()
+    def _force_new_game(self):
+        """Force a fresh game: focus the window, dismiss any dialog, press F2,
+        and confirm the '新游戏' confirmation dialog."""
+        self._focus_game_window()
+        if self._handle_dialogs():
+            return
+        pyautogui.press('f2')
+        time.sleep(1)
+        if "新游戏" in get_foreground_window_title():
+            logging.info("New Game dialog detected after F2. Confirming with Alt+N...")
+            pyautogui.hotkey('alt', 'n')
+            time.sleep(0.5)
+
+    def _calibrate_and_first_click(self):
+        """Calibrate the board, verify it is a fresh all-closed board, and perform
+        the first click. Returns True only if the game is playable (cells opened)."""
         time.sleep(1.5)
         calib = self.board.find_board()
         if not calib:
-            logging.error("Calibration failed in FIRST_MOVE. Returning to IDLE.")
-            self.state = "IDLE"
-            return
+            logging.error("Calibration failed (grid not found).")
+            return False
+        if not calib.get('anchor_matched'):
+            logging.error(f"Anchor matching failed (step={calib['cell_w']:.1f}, "
+                          f"origin=({calib['win_ox']},{calib['win_oy']})). "
+                          "Board is not a fresh game; retrying.")
+            return False
+
         self.calib = calib
         self.closed_baseline = None
         self.controller = Controller(calib['origin_x'], calib['origin_y'], calib['cell_w'], calib['cell_h'])
         self.rows = calib.get('rows', self.rows)
         self.cols = calib.get('cols', self.cols)
         self.solver = Solver(self.rows, self.cols, marked_cells=self.board.marked_cells)
-        # self.flag_screenshot_counter = 0
 
         # Compute per-cell closed_tile baseline from the fresh all-closed board
         board_info = calib.copy()
@@ -227,9 +246,10 @@ class MinesweeperBot:
         self.closed_baseline = self.board.compute_closed_baseline(board_info)
         logging.info(f"Closed baseline range: {self.closed_baseline.min():.2f} ~ {self.closed_baseline.max():.2f}")
 
-        # Log initial board state (pre-first-click) to verify no false positives
+        # Log initial board state (pre-first-click) and verify it is all closed
         board_info['closed_baseline'] = self.closed_baseline
         init_matrix, init_scores = self.board.analyze_board(board_info)
+        closed_frac = float((init_matrix == -1).mean())
         logging.debug("--- Initial Board (pre-first-move) ---")
         for r in range(self.rows):
             cells = []
@@ -237,13 +257,44 @@ class MinesweeperBot:
                 cells.append(f"({init_matrix[r,c]},{init_scores[r,c]*100:.0f}%)")
             logging.debug("  " + " ".join(cells))
         logging.debug("--------------------------------------")
+        if closed_frac < 0.95:
+            logging.error(f"Pre-first-move board is not fresh (only {closed_frac*100:.0f}% closed). Retrying.")
+            return False
 
         r, c = self.rows // 2, self.cols // 2
         self._focus_game_window()
         self.controller.click_cell(r, c)
-        logging.info(f"First move at ({r}, {c}). Waiting 3 seconds before entering PLAYING state.")
-        time.sleep(0.75)
-        self.state = "PLAYING"
+        time.sleep(1.5)
+        matrix, _ = self.board.analyze_board(board_info)
+        opened = int((matrix != -1).sum())
+        logging.info(f"First move at ({r}, {c}) opened {opened} cells.")
+        if opened == 0:
+            logging.error("Board did not open after first click (game not in a fresh state). Retrying.")
+            return False
+        self._last_sig = matrix.tobytes()
+        self._stagnant_cycles = 0
+        return True
+
+    def _handle_first_move(self):
+        logging.info("State: FIRST_MOVE. Calibrating fresh board...")
+        # Clear any flagged-cell state from previous games BEFORE anything else
+        self.board.marked_cells.clear()
+        if self._calibrate_and_first_click():
+            self.state = "PLAYING"
+            logging.info("Entering PLAYING state.")
+            return
+        # First attempt failed (e.g. stale board after a failed restart) →
+        # force a fresh game and retry.
+        for attempt in range(1, 5):
+            logging.warning(f"Fresh-game attempt {attempt}/4: forcing a new game.")
+            self.board.marked_cells.clear()
+            self._force_new_game()
+            if self._calibrate_and_first_click():
+                self.state = "PLAYING"
+                logging.info("Entering PLAYING state.")
+                return
+        logging.error("Could not start a fresh game after 4 attempts. Returning to IDLE.")
+        self.state = "IDLE"
 
     def _handle_dialogs(self):
         """Check foreground window title and handle any dialogs. Returns True if a dialog was handled."""
@@ -323,6 +374,26 @@ class MinesweeperBot:
             print_report()
             self.state = "RESULT"
             return
+
+        # Stagnation guard: if we only guess and the board never changes across
+        # consecutive cycles, the clicks are missing their targets (broken
+        # calibration / stale board). Force a fresh game instead of looping forever.
+        sig = matrix.tobytes()
+        if actions[0][0] == 'GUESS':
+            if sig == self._last_sig:
+                self._stagnant_cycles += 1
+            else:
+                self._stagnant_cycles = 0
+            if self._stagnant_cycles >= 5:
+                logging.warning("Board unchanged for 5 guess cycles. Restarting the game.")
+                self._last_sig = None
+                self._stagnant_cycles = 0
+                self._force_new_game()
+                self.state = "FIRST_MOVE"
+                return
+        else:
+            self._stagnant_cycles = 0
+        self._last_sig = sig
 
         self._focus_game_window()
         for action, coords, reason in actions:
