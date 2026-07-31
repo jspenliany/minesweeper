@@ -336,14 +336,14 @@ class MinesweeperBot:
                 board_info['rows'] = self.rows
                 board_info['cols'] = self.cols
                 board_info['closed_baseline'] = self.closed_baseline
-                matrix, _ = self.board.analyze_board(board_info)
+                matrix, new_scores = self.board.analyze_board(board_info)
                 self.solver.update_grid(matrix)
             # ---------------------------print matrix-------start
                 for r in range(self.rows):
                     cells = []
                     for c in range(self.cols):
                         v = matrix[r, c]
-                        s = scores[r, c]
+                        s = new_scores[r, c]
                         cells.append(f"({v},{s * 100:.0f}%)")
                     logging.info("  " + " ".join(cells))
                 logging.info("--------------------------------")
@@ -409,6 +409,7 @@ class MinesweeperBot:
             if not actions or actions[0][0] in ('NONE', 'GUESS'):
                 break
 
+            any_executed = False
             for action, coords, reason in actions:
                 focus_counter += 1
                 do_focus = (focus_counter % 10 == 0)
@@ -433,6 +434,7 @@ class MinesweeperBot:
                     board_info['closed_baseline'] = self.closed_baseline
                     matrix, _ = self.board.analyze_board(board_info)
                     self.solver.update_grid(matrix)
+                    any_executed = True
                 elif action == 'MARK':
                     r, c = coords
                     if (r, c) in self.board.marked_cells:
@@ -453,9 +455,13 @@ class MinesweeperBot:
                         self._focus_game_window()
                     self.controller.click_cell(r, c, right_click=True)
                     self.board.mark_cell(r, c)
+                    any_executed = True
                     time.sleep(0.35)
                     if self._handle_dialogs():
                         return
+
+            if not any_executed:
+                break
 
     def _handle_result(self):
         logging.info("State: RESULT.")

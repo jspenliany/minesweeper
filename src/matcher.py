@@ -46,7 +46,7 @@ class Matcher:
                 path = os.path.join(tile_dir, file)
                 self.templates[file] = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         # Auto-crop number templates to digit-only (remove background noise)
-        for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+        for name in ("1.png", "2.png", "3.png", "4.png", "5.png", "6.png"):
             tmpl = self.templates.get(name)
             if tmpl is not None:
                 digit = self._crop_digit(tmpl)
@@ -110,7 +110,7 @@ class Matcher:
                 if tmpl.shape[1] == cell_w and tmpl.shape[0] == cell_h:
                     continue
                 self.templates[key] = cv2.resize(tmpl, (cell_w, cell_h), interpolation=cv2.INTER_LINEAR)
-        for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+        for name in ("1.png", "2.png", "3.png", "4.png", "5.png", "6.png"):
             tmpl = self.templates.get(name)
             if tmpl is not None:
                 digit = self._crop_digit(tmpl)

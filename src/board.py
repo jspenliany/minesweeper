@@ -341,7 +341,7 @@ class Board:
         inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
         best_num = None
         best_score = 0.40
-        for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
+        for name in ("1.png", "2.png", "3.png", "4.png", "5.png", "6.png"):
             tmpl = self.matcher.templates.get(name.replace(".png", "_digit.png"))
             if tmpl is None:
                 continue
@@ -364,12 +364,25 @@ class Board:
         if y2 <= y1 or x2 <= x1:
             return -3
         center = cell_img[y1:y2, x1:x2]
-        avg = center.mean(axis=(0, 1))
-        b, g, r = float(avg[0]), float(avg[1]), float(avg[2])
+        std = center.std(axis=(0, 1))
+        b_std, g_std, r_std = float(std[0]), float(std[1]), float(std[2])
 
-        # Blank (uniform light gray)
-        if b > 200 and g > 200 and r > 200:
-            return -2
+        # Blank (uniform light gray) — low std in all channels
+        if b_std < 15 and g_std < 15 and r_std < 15:
+            avg = center.mean(axis=(0, 1))
+            b, g, r = float(avg[0]), float(avg[1]), float(avg[2])
+            if b > 180 and g > 180 and r > 180:
+                return -2
+            return -3
+
+        # There's a digit — find the pixel farthest from gray to get the digit color
+        gray_avg = center.mean(axis=(0, 1))
+        gray = np.full_like(center, gray_avg, dtype=center.dtype)
+        diff = np.abs(center.astype(np.float32) - gray.astype(np.float32)).sum(axis=2)
+        flat_idx = diff.argmax()
+        max_y = flat_idx // center.shape[1]
+        max_x = flat_idx % center.shape[1]
+        b, g, r = float(center[max_y, max_x, 0]), float(center[max_y, max_x, 1]), float(center[max_y, max_x, 2])
 
         # Known digit BGR centroids
         colors = {
