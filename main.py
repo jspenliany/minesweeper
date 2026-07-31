@@ -52,7 +52,7 @@ def focus_minesweeper_window():
     return True
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("minesweeper_bot.log", mode='w', encoding='utf-8'),
@@ -61,7 +61,10 @@ logging.basicConfig(
 )
 
 class MinesweeperBot:
-    def __init__(self):
+    def __init__(self, debug=False):
+        self.debug = debug
+        if not debug:
+            logging.getLogger().setLevel(logging.INFO)
         self.capture = Capture()
         self.matcher = Matcher()
         self.board = Board(self.capture, self.matcher)
@@ -153,9 +156,9 @@ class MinesweeperBot:
         step = int(round(calib['cell_w']))
         calib_rows = calib.get('rows', 16)
         calib_cols = calib.get('cols', 30)
-        logging.info(f"Preview: win_ox={calib['win_ox']}, win_oy={calib['win_oy']}, "
-                     f"step={step}, "
-                     f"n_cols={calib_cols}, n_rows={calib_rows}")
+        logging.debug(f"Preview: win_ox={calib['win_ox']}, win_oy={calib['win_oy']}, "
+                      f"step={step}, "
+                      f"n_cols={calib_cols}, n_rows={calib_rows}")
         mid_row_y = int(calib['win_oy'] + (calib_rows // 2) * step + 0.5)
         for c in range(calib_cols):
             sx = int(calib['win_ox'] + c * step + 0.5)
@@ -186,7 +189,8 @@ class MinesweeperBot:
 
         self.rows = calib.get('rows', self.rows)
         self.cols = calib.get('cols', self.cols)
-        self._save_calibration_preview(calib)
+        if self.debug:
+            self._save_calibration_preview(calib)
         logging.info("Calibration OK. Pressing F2 to start fresh game...")
         self._focus_game_window()
         pyautogui.press('f2')
@@ -226,13 +230,13 @@ class MinesweeperBot:
         # Log initial board state (pre-first-click) to verify no false positives
         board_info['closed_baseline'] = self.closed_baseline
         init_matrix, init_scores = self.board.analyze_board(board_info)
-        logging.info("--- Initial Board (pre-first-move) ---")
+        logging.debug("--- Initial Board (pre-first-move) ---")
         for r in range(self.rows):
             cells = []
             for c in range(self.cols):
                 cells.append(f"({init_matrix[r,c]},{init_scores[r,c]*100:.0f}%)")
-            logging.info("  " + " ".join(cells))
-        logging.info("--------------------------------------")
+            logging.debug("  " + " ".join(cells))
+        logging.debug("--------------------------------------")
 
         r, c = self.rows // 2, self.cols // 2
         self._focus_game_window()
@@ -299,7 +303,7 @@ class MinesweeperBot:
         board_info['closed_baseline'] = self.closed_baseline
         matrix, scores = self.board.analyze_board(board_info)
         
-        logging.info("--- Current Logical Board ---")
+        logging.debug("--- Current Logical Board ---")
     #---------------------------print matrix-------start
         for r in range(self.rows):
             cells = []
@@ -307,8 +311,8 @@ class MinesweeperBot:
                 v = matrix[r, c]
                 s = scores[r, c]
                 cells.append(f"({v},{s*100:.0f}%)")
-            logging.info("  " + " ".join(cells))
-        logging.info("--------------------------------")
+            logging.debug("  " + " ".join(cells))
+        logging.debug("--------------------------------")
     #---------------------------print matrix-------end
 
         self.solver.update_grid(matrix)
@@ -345,25 +349,23 @@ class MinesweeperBot:
                         v = matrix[r, c]
                         s = new_scores[r, c]
                         cells.append(f"({v},{s * 100:.0f}%)")
-                    logging.info("  " + " ".join(cells))
-                logging.info("--------------------------------")
+                    logging.debug("  " + " ".join(cells))
+                logging.debug("--------------------------------")
             # ---------------------------print matrix-------end
             elif action == 'MARK':
                 r, c = coords
                 if (r, c) in self.board.marked_cells:
                     logging.warning(f"MARK on already-marked cell ({r},{c}), skipping")
                     continue
-                # 1. Screenshot with red circle BEFORE marking (documents the decision)
-                self.flag_screenshot_counter += 1
-        #-----------------------------------------------------image save-------start
-                pre_img = self.capture.get_screenshot()
-                cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
-                cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
-                cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-                filename = f"flag{self.flag_screenshot_counter:04d}.png"
-                cv2.imwrite(filename, pre_img)
-                logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
-        #-----------------------------------------------------image save-------end
+                if self.debug:
+                    self.flag_screenshot_counter += 1
+                    pre_img = self.capture.get_screenshot()
+                    cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+                    cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
+                    cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
+                    filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                    cv2.imwrite(filename, pre_img)
+                    logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
                 # 2. Brief pause for screenshot review
                 time.sleep(0.25)
                 # 3. Log reasoning
@@ -440,16 +442,15 @@ class MinesweeperBot:
                     if (r, c) in self.board.marked_cells:
                         logging.warning(f"[Cascade] MARK on already-marked cell ({r},{c}), skipping")
                         continue
-                    self.flag_screenshot_counter += 1
-        #-----------------------------------------------------image save-------start
-                    pre_img = self.capture.get_screenshot()
-                    cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
-                    cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
-                    cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
-                    filename = f"flag{self.flag_screenshot_counter:04d}.png"
-                    cv2.imwrite(filename, pre_img)
-                    logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
-        #-----------------------------------------------------image save-------end
+                    if self.debug:
+                        self.flag_screenshot_counter += 1
+                        pre_img = self.capture.get_screenshot()
+                        cx = int(round(self.controller.origin_x + c * self.controller.cell_w - self.capture.window_offset_x))
+                        cy = int(round(self.controller.origin_y + r * self.controller.cell_h - self.capture.window_offset_y))
+                        cv2.circle(pre_img, (cx, cy), 10, (0, 0, 255), 2)
+                        filename = f"flag{self.flag_screenshot_counter:04d}.png"
+                        cv2.imwrite(filename, pre_img)
+                        logging.info(f"[Cascade] Saved {filename} with cell ({r},{c}) circled before marking.")
                     logging.info(f"[Cascade] {Reasoner.format(action, coords, reason)}")
                     if do_focus:
                         self._focus_game_window()
@@ -501,5 +502,7 @@ class MinesweeperBot:
             self.state = "FIRST_MOVE"
 
 if __name__ == "__main__":
-    bot = MinesweeperBot()
+    import sys
+    debug = "--debug" in sys.argv
+    bot = MinesweeperBot(debug=debug)
     bot.run()

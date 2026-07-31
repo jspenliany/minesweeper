@@ -287,7 +287,7 @@ class Board:
             for c in range(cols):
                 x = int(ox - crop_w / 2 + c * board_info['cell_w'] + 0.5)
                 y = int(oy - crop_h / 2 + r * board_info['cell_h'] + 0.5)
-                logging.debug(f"Cell ({r},{c}) at crop ({x},{y})")
+            #    logging.debug(f"Cell ({r},{c}) at crop ({x},{y})")
                 if (x < 0 or y < 0 or
                     x + crop_w > screen.shape[1] or
                     y + crop_h > screen.shape[0]):
