@@ -10,7 +10,7 @@ from src.matcher import Matcher
 from src.board import Board
 from src.solver import Solver, Reasoner
 from src.controller import Controller
-
+pyautogui.PAUSE = 0
 user32 = ctypes.windll.user32
 
 def get_foreground_window_title():
@@ -437,14 +437,12 @@ class MinesweeperBot:
                     filename = f"flag{self.flag_screenshot_counter:06d}.png"
                     cv2.imwrite(filename, pre_img)
                     logging.info(f"Saved {filename} with cell ({r},{c}) circled before marking.")
-                # 2. Brief pause for screenshot review
-                time.sleep(0.25)
                 # 3. Log reasoning
                 logging.info(Reasoner.format(action, coords, reason))
                 # 4. Right-click to place flag
                 self.controller.click_cell(r, c, right_click=True)
                 self.board.mark_cell(r, c)
-                time.sleep(0.35)
+                time.sleep(0.15)
                 if self._handle_dialogs(): return
                 # 5. Post-mark cascade
                 self._cascade_flag_clicks()
@@ -528,7 +526,7 @@ class MinesweeperBot:
                     self.controller.click_cell(r, c, right_click=True)
                     self.board.mark_cell(r, c)
                     any_executed = True
-                    time.sleep(0.35)
+                    time.sleep(0.15)
                     if self._handle_dialogs():
                         return
 
