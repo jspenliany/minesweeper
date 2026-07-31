@@ -2,6 +2,7 @@ this is the vibe-coding-based minesweeper-bot project
 
 ## code defects#
 the current implementation version can only run on a specific mine-sweeping window size
+the analyze_board is always target at the whole window,  8-blocks around current block may be faster
 
 ##start it by yourself#
 
