@@ -9,6 +9,7 @@ class Board:
         self.matcher = matcher
         self.expected_cols = expected_cols
         self.marked_cells = set()
+        self._cell_cache = {}
 
     def _find_board_contour(self, screen, debug_img):
         """Edge detection → find the board rectangle. Returns (bx, by, bw, bh) or None."""
@@ -107,6 +108,9 @@ class Board:
     @timer
     def find_board(self):
         screen = self.capture.get_screenshot()
+        # A newly located board invalidates any cached per-cell classifications
+        # from the previous game.
+        self._cell_cache = {}
         debug_img = screen.copy()
         h_screen, w_screen = screen.shape[:2]
 
@@ -284,6 +288,8 @@ class Board:
 
         closed_baseline = board_info.get('closed_baseline')
 
+        cache = self._cell_cache
+
         for r in range(rows):
             for c in range(cols):
                 x = int(ox - crop_w / 2 + c * board_info['cell_w'] + 0.5)
@@ -299,6 +305,19 @@ class Board:
                     continue
 
                 cell_img = screen[y : y + crop_h, x : x + crop_w]
+
+                # Incremental cache: most cells are pixel-identical between
+                # consecutive analyses (only the cascade region changes after a
+                # click). Reuse the previous classification when unchanged; the
+                # pixel-exact compare keeps this safe — any change at all falls
+                # through to full classification below.
+                cached = cache.get((r, c))
+                if cached is not None:
+                    prev_img, prev_val, prev_score = cached
+                    if prev_img.shape == cell_img.shape and np.array_equal(prev_img, cell_img):
+                        matrix[r, c] = prev_val
+                        scores[r, c] = prev_score
+                        continue
 
                 # 1. Flag detection (closed tile with a red flag icon)
                 # Rule: closed tiles have high variance; a red flag in the center
@@ -319,6 +338,7 @@ class Board:
                         scores[r, c] = 1.0 - min(1.0, err)
                     else:
                         scores[r, c] = min(1.0, current_var / 5000.0)
+                    cache[(r, c)] = (cell_img.copy(), matrix[r, c], scores[r, c])
                     continue
 
                 # 3. Open cell — try digit template matching first
@@ -328,6 +348,7 @@ class Board:
                     num = self._classify_cell_by_color(cell_img)
                 matrix[r, c] = num
                 scores[r, c] = 0.0 if num == -2 else 1.0 if num >= 0 else 0.5
+                cache[(r, c)] = (cell_img.copy(), num, scores[r, c])
 
         return matrix, scores
 
