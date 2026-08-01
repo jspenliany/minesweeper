@@ -362,17 +362,22 @@ class Board:
             return None
         inner = cell_img[MARGIN:-MARGIN, MARGIN:-MARGIN]
 
-        # Blank guard: TM_CCOEFF_NORMED is color-blind (mean/variance normalized),
-        # so a blank cell's gray bevel can spuriously correlate with a digit shape.
-        # A real digit always has hundreds of strongly-colored pixels (saturation
-        # > 40); blank bevels are gray (saturation ~ 0). Bail out before matching.
+        # Blank guard: TM_CCOEFF_NORMED responds mainly to shape/intensity
+        # patterns and discriminates color only weakly, so a blank cell's gray
+        # bevel can spuriously correlate with a digit shape. A real digit always
+        # has hundreds of strongly-colored pixels (saturation > 40); blank
+        # bevels are gray (saturation ~ 0). Bail out before matching.
         arr = inner.astype(np.int32)
         sat = arr.max(axis=2) - arr.min(axis=2)
         if int((sat > 40).sum()) < 50:
             return None
 
+        # Acceptance threshold 0.60, not 0.40: on flat low-texture cells the
+        # normalized correlation can spike to ~0.40-0.41 for a wrong digit (a
+        # blank tile spuriously matching e.g. "4"), while a real digit scores
+        # ~0.90+ on its own template. 0.60 cleanly separates the two.
         best_num = None
-        best_score = 0.40
+        best_score = 0.60
         for name in ("1.png", "2.png", "3.png", "4.png", "5.png", "6.png"):
             tmpl = self.matcher.templates.get(name.replace(".png", "_digit.png"))
             if tmpl is None:
