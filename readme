@@ -1,15 +1,26 @@
 this is the vibe-coding-based minesweeper-bot project
 
 ## code defects#
-the current implementation version can only run on a specific mine-sweeping window size
+
 the analyze_board is always target at the whole window,  8-blocks around current block may be faster
+the program may in a loop that click a block is open_blank
 
 ##start it by yourself#
 
 1 For anyone who want to run the code in win8 and above, please download the win7 package (https://win7games.com) Warning, please make sure the package is virus-free!!!
+    open the mine-sweeper window (warning NOT too small)
+2 please replace both board_tl.png and board_br.png with the blocks captured from the minesweeper window(top-left block and bottom-right block)
 
-2 please replace board_tl.png & board_br.png with the blocks captured from the minesweeper window(top-left block and bottom-right block, no black border include)
+3 runtime environment prepare
+    install python version 3.11~3.12
+    pip install opencv-python numpy pyautogui
 
+4 enter into minesweeper directory
+    right click mouse & choose powershell in this directory menu
+    type 'python main.py' & kick the enter key to start the bot
+   'python main.py --debug' will generate sequence snapshot of the progress in the workspace for anyone who want to know the detail
+
+5 for anyone who want to go further with the code, please refer to conda-env-config.txt to build your develop environment----for the spirit of open source
 
 
 
